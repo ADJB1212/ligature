@@ -15,6 +15,11 @@ ligature-theme.workspace = true
 ligature-ui.workspace = true
 ligature-editor.workspace = true
 ligature-buffer.workspace = true
+ligature-fs.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile = "3.27"
 
 [lints]
 workspace = true

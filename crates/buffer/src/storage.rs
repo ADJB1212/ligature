@@ -13,6 +13,19 @@ pub struct DocumentId(u64);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Revision(u64);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SavePoint {
+    document: DocumentId,
+    revision: Revision,
+    state: Revision,
+}
+
+impl SavePoint {
+    pub fn revision(self) -> Revision {
+        self.revision
+    }
+}
+
 impl Revision {
     pub fn get(self) -> u64 {
         self.0
@@ -78,6 +91,16 @@ impl Buffer {
 
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    pub fn reload(&mut self, text: &str) {
+        if self.text != text {
+            self.apply(TextRange::new(ByteOffset(0), ByteOffset(self.len())), text);
+        }
+        self.undo.clear();
+        self.redo.clear();
+        self.current_state = self.revision;
+        self.mark_saved();
     }
 
     pub fn len(&self) -> usize {
@@ -204,9 +227,26 @@ impl Buffer {
 
     /// Marks current text as saved. Newly constructed buffers start clean.
     pub fn mark_saved(&mut self) {
+        let point = self.save_point();
+        self.mark_saved_at(point);
+    }
+
+    pub fn save_point(&mut self) -> SavePoint {
         self.end_typing_group();
-        self.saved_state = self.current_state;
-        self.saved_revision = self.revision;
+        SavePoint {
+            document: self.id,
+            revision: self.revision,
+            state: self.current_state,
+        }
+    }
+
+    pub fn mark_saved_at(&mut self, point: SavePoint) -> bool {
+        if point.document != self.id {
+            return false;
+        }
+        self.saved_state = point.state;
+        self.saved_revision = point.revision;
+        true
     }
 
     /// The revision at the last save, which does not rewind during undo/redo.

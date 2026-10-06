@@ -1,22 +1,34 @@
 //! Application startup, action registration, native menus, and lifecycle.
 
-use gpui::{App, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOptions, actions, prelude::*, px, size};
+use gpui::{App, Bounds, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOptions, prelude::*, px, size};
 use ligature_core::APP_NAME;
-use ligature_workspace::Workspace;
-
-actions!(ligature, [Quit]);
+use ligature_workspace::{Close, New, Open, Quit, Save, SaveAs, Workspace};
 
 /// Start the native event loop and open the workspace window.
 pub fn run() {
     gpui_platform::application().run(|cx: &mut App| {
         ligature_ui::init(cx);
         ligature_editor::init(cx);
-        cx.on_action(|_: &Quit, cx| cx.quit());
-        #[cfg(target_os = "macos")]
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-        #[cfg(not(target_os = "macos"))]
-        cx.bind_keys([KeyBinding::new("ctrl-q", Quit, None)]);
-        cx.set_menus(vec![Menu::new(APP_NAME).items([MenuItem::action("Quit Ligature", Quit)])]);
+        ligature_workspace::init(cx);
+        cx.on_action(|_: &Quit, cx| {
+            if let Some(window) = cx.windows().first().and_then(|window| window.downcast::<Workspace>()) {
+                window.update(cx, |workspace, window, cx| workspace.request_quit(window, cx)).ok();
+            } else {
+                cx.quit();
+            }
+        });
+        cx.set_menus(vec![
+            Menu::new(APP_NAME).items([MenuItem::action("Quit Ligature", Quit)]),
+            Menu::new("File").items([
+                MenuItem::action("New", New),
+                MenuItem::action("Open...", Open),
+                MenuItem::separator(),
+                MenuItem::action("Save", Save),
+                MenuItem::action("Save As...", SaveAs),
+                MenuItem::separator(),
+                MenuItem::action("Close", Close),
+            ]),
+        ]);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();

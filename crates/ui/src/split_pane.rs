@@ -10,6 +10,11 @@ pub struct SplitPane {
 }
 
 impl SplitPane {
+    pub fn set_leading(&mut self, leading: AnyView, cx: &mut Context<Self>) {
+        self.leading = leading;
+        cx.notify();
+    }
+
     pub fn new(leading: AnyView, trailing: AnyView) -> Self {
         Self {
             leading,

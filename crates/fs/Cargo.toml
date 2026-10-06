@@ -9,5 +9,9 @@ license.workspace = true
 publish = false
 description = "File reads and writes, atomic saves, path handling, and filesystem watching"
 
+[dependencies]
+tempfile = "3.27"
+async-channel = "2.5"
+
 [lints]
 workspace = true

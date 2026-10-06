@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use ligature_buffer::{Buffer, ByteOffset, Position};
+use ligature_buffer::{Buffer, ByteOffset, Position, SavePoint};
 use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,6 +69,28 @@ impl EditorState {
 
     pub fn buffer(&self) -> &Buffer {
         &self.buffer
+    }
+
+    pub fn save_snapshot(&mut self) -> (SavePoint, String) {
+        self.commit_composition();
+        (self.buffer.save_point(), self.buffer.text().to_owned())
+    }
+
+    pub fn mark_saved_at(&mut self, point: SavePoint) -> bool {
+        self.buffer.mark_saved_at(point)
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.buffer.is_dirty() || self.composition.is_some()
+    }
+
+    pub fn reload(&mut self, text: String) {
+        let anchor = self.anchor;
+        let caret = self.caret;
+        self.buffer.reload(&text);
+        self.composition = None;
+        self.line_ending = if text.contains("\r\n") { LineEnding::CrLf } else { LineEnding::Lf };
+        self.select(anchor, caret);
     }
 
     pub fn text(&self) -> &str {

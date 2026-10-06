@@ -67,11 +67,20 @@ impl Editor {
         &self.state
     }
 
-    pub fn update_state(&mut self, update: impl FnOnce(&mut EditorState), cx: &mut Context<Self>) {
-        update(&mut self.state);
+    pub fn set_buffer(&mut self, buffer: Buffer, cx: &mut Context<Self>) {
+        self.state = EditorState::new(buffer);
+        self.scroll = point(px(0.0), px(0.0));
         self.preferred_x = None;
         self.reveal_caret = true;
         cx.notify();
+    }
+
+    pub fn update_state<R>(&mut self, update: impl FnOnce(&mut EditorState) -> R, cx: &mut Context<Self>) -> R {
+        let result = update(&mut self.state);
+        self.preferred_x = None;
+        self.reveal_caret = true;
+        cx.notify();
+        result
     }
 
     pub fn set_font(&mut self, family: Option<SharedString>, font_size: Pixels, cx: &mut Context<Self>) {

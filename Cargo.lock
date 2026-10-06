@@ -3057,6 +3057,10 @@ dependencies = [
 [[package]]
 name = "ligature-fs"
 version = "0.0.1"
+dependencies = [
+ "async-channel",
+ "tempfile",
+]
 
 [[package]]
 name = "ligature-lsp"
@@ -3120,8 +3124,10 @@ dependencies = [
  "gpui-ce",
  "ligature-buffer",
  "ligature-editor",
+ "ligature-fs",
  "ligature-theme",
  "ligature-ui",
+ "tempfile",
 ]
 
 [[package]]
