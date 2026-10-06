@@ -20,19 +20,19 @@ pub struct Colors {
 
 pub fn colors() -> Colors {
     Colors {
-        background: rgb_to_hsla(rgb(0x1f363d)),
-        surface: rgb_to_hsla(rgb(0x29464f)),
-        text: rgb_to_hsla(rgb(0xcfe0c3)),
-        muted_text: rgb_to_hsla(rgb(0x9ec1a3)),
-        border: rgb_to_hsla(rgb(0x40798c)),
-        accent: rgb_to_hsla(rgb(0x9ec1a3)),
-        accent_hover: rgb_to_hsla(rgb(0xcfe0c3)),
-        on_accent: rgb_to_hsla(rgb(0x1f363d)),
-        focus: rgb_to_hsla(rgb(0x70a9a1)),
-        disabled_surface: rgb_to_hsla(rgb(0x354c53)),
-        disabled_text: rgb_to_hsla(rgb(0x91a0a1)),
-        error: rgb_to_hsla(rgb(0xffb4ab)),
-        error_surface: rgb_to_hsla(rgb(0x503638)),
+        background: rgb_to_hsla(rgb(0x1a2330)),
+        surface: rgb_to_hsla(rgb(0x232d3c)),
+        text: rgb_to_hsla(rgb(0xdce3ea)),
+        muted_text: rgb_to_hsla(rgb(0x8b97a8)),
+        border: rgb_to_hsla(rgb(0x3a4a5c)),
+        accent: rgb_to_hsla(rgb(0xdce3ea)),
+        accent_hover: rgb_to_hsla(rgb(0xf2f5f8)),
+        on_accent: rgb_to_hsla(rgb(0x1a2330)),
+        focus: rgb_to_hsla(rgb(0x9eb0c4)),
+        disabled_surface: rgb_to_hsla(rgb(0x2a3544)),
+        disabled_text: rgb_to_hsla(rgb(0x6d7a8a)),
+        error: rgb_to_hsla(rgb(0xe8a49c)),
+        error_surface: rgb_to_hsla(rgb(0x3a2e32)),
     }
 }
 
@@ -75,5 +75,5 @@ pub mod spacing {
 
 /// Background of the workspace.
 pub fn window_background() -> Rgba {
-    rgb(0x1f363d)
+    rgb(0x1a2330)
 }
