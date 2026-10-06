@@ -1,0 +1,7 @@
+max_width = 150
+fn_params_layout = "Compressed"
+edition = "2024"
+style_edition = "2024"
+# imports_granularity = "Module"
+# group_imports = "StdExternalCrate"
+# where_single_line = true

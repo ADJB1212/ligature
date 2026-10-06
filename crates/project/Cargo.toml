@@ -1,0 +1,13 @@
+[package]
+name = "ligature-project"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+description = "TeX project membership, root-document selection, and relationships between project files"
+
+[lints]
+workspace = true

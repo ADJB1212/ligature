@@ -1,0 +1,13 @@
+[package]
+name = "ligature-lsp"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+description = "Language-server process lifecycle, protocol transport, and request/notification handling"
+
+[lints]
+workspace = true

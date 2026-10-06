@@ -1,0 +1,13 @@
+[package]
+name = "ligature-buffer"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+description = "Text storage, edit transactions, undo/redo history, and document positions"
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "ligature-fs"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+description = "File reads and writes, atomic saves, path handling, and filesystem watching"
+
+[lints]
+workspace = true

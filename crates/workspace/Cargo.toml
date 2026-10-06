@@ -1,0 +1,17 @@
+[package]
+name = "ligature-workspace"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+description = "Top-level window views, pane layout, tabs, and coordination between editor and preview views"
+
+[dependencies]
+gpui.workspace = true
+ligature-theme.workspace = true
+
+[lints]
+workspace = true

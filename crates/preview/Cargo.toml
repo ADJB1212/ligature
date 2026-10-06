@@ -1,0 +1,13 @@
+[package]
+name = "ligature-preview"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+description = "GPUI PDF preview views, page navigation, zoom, and rendered-page caching"
+
+[lints]
+workspace = true

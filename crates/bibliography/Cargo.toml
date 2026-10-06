@@ -1,0 +1,13 @@
+[package]
+name = "ligature-bibliography"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+description = "BibTeX and BibLaTeX entries, bibliography indexing, and citation lookup"
+
+[lints]
+workspace = true

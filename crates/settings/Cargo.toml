@@ -1,0 +1,13 @@
+[package]
+name = "ligature-settings"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+description = "Application and project configuration, defaults, and persistence"
+
+[lints]
+workspace = true

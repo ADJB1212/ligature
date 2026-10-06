@@ -1,0 +1,13 @@
+[package]
+name = "ligature-ui"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+description = "Reusable GPUI controls such as buttons, inputs, menus, and panels"
+
+[lints]
+workspace = true
