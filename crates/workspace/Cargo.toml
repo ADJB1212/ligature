@@ -12,6 +12,7 @@ description = "Top-level window views, pane layout, tabs, and coordination betwe
 [dependencies]
 gpui.workspace = true
 ligature-theme.workspace = true
+ligature-ui.workspace = true
 
 [lints]
 workspace = true

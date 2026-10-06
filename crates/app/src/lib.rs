@@ -6,9 +6,10 @@ use ligature_workspace::Workspace;
 
 actions!(ligature, [Quit]);
 
-/// Start the native event loop and open the initial blank window.
+/// Start the native event loop and open the workspace window.
 pub fn run() {
     gpui_platform::application().run(|cx: &mut App| {
+        ligature_ui::init(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         #[cfg(target_os = "macos")]
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
@@ -33,7 +34,7 @@ pub fn run() {
                 window_min_size: Some(size(px(640.0), px(480.0))),
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| Workspace),
+            |_, cx| cx.new(Workspace::new),
         )
         .expect("failed to open the Ligature window");
         cx.activate(true);

@@ -9,5 +9,12 @@ license.workspace = true
 publish = false
 description = "Reusable GPUI controls such as buttons, inputs, menus, and panels"
 
+[dependencies]
+gpui.workspace = true
+ligature-theme.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
 [lints]
 workspace = true
