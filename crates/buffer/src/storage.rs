@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{ByteOffset, Position, PositionError, TextRange};
+use crate::{Edit, history::Transaction};
 
 static NEXT_DOCUMENT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -28,6 +29,12 @@ pub struct Buffer {
     revision: Revision,
     text: String,
     line_starts: Vec<usize>,
+    undo: Vec<Transaction>,
+    redo: Vec<Transaction>,
+    typing_group: bool,
+    current_state: Revision,
+    saved_state: Revision,
+    saved_revision: Revision,
 }
 
 impl Default for Buffer {
@@ -52,6 +59,12 @@ impl Buffer {
             revision: Revision::default(),
             text,
             line_starts,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            typing_group: false,
+            current_state: Revision::default(),
+            saved_state: Revision::default(),
+            saved_revision: Revision::default(),
         }
     }
 
@@ -133,17 +146,131 @@ impl Buffer {
         Ok(offset)
     }
 
-    /// Revalidates the range against current text. Identical replacements do
-    /// not advance the revision; every successful text change advances it once.
-    pub fn replace(&mut self, range: TextRange, text: &str) -> Result<(), PositionError> {
-        if self.slice(range)? == text {
-            return Ok(());
+    /// Inserts one explicit transaction, including paste. Empty text is a no-op.
+    pub fn insert(&mut self, offset: ByteOffset, text: &str) -> Result<Option<Edit>, PositionError> {
+        let range = self.text_range(offset, offset)?;
+        self.replace(range, text)
+    }
+
+    pub fn delete(&mut self, range: TextRange) -> Result<Option<Edit>, PositionError> {
+        self.replace(range, "")
+    }
+
+    /// Revalidates the range and records one undo transaction. Identical
+    /// replacements return `None` and preserve revision, dirty state, and redo.
+    pub fn replace(&mut self, range: TextRange, text: &str) -> Result<Option<Edit>, PositionError> {
+        self.edit(range, text, false)
+    }
+
+    /// Groups adjacent insertions until an explicit edit, save, undo, redo, or
+    /// `end_typing_group`. Newlines are separate transactions and end the group.
+    pub fn type_text(&mut self, offset: ByteOffset, text: &str) -> Result<Option<Edit>, PositionError> {
+        let range = self.text_range(offset, offset)?;
+        self.edit(range, text, !text.contains('\n'))
+    }
+
+    /// Call when cursor movement or another UI action interrupts typing.
+    pub fn end_typing_group(&mut self) {
+        self.typing_group = false;
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    pub fn undo(&mut self) -> Option<Edit> {
+        self.end_typing_group();
+        let transaction = self.undo.pop()?;
+        let range = TextRange::new(transaction.start, ByteOffset(transaction.start.0 + transaction.inserted.len()));
+        let edit = self.apply(range, &transaction.removed);
+        self.current_state = transaction.before_state;
+        self.redo.push(transaction);
+        Some(edit)
+    }
+
+    pub fn redo(&mut self) -> Option<Edit> {
+        self.end_typing_group();
+        let transaction = self.redo.pop()?;
+        let range = TextRange::new(transaction.start, ByteOffset(transaction.start.0 + transaction.removed.len()));
+        let edit = self.apply(range, &transaction.inserted);
+        self.current_state = transaction.after_state;
+        self.undo.push(transaction);
+        Some(edit)
+    }
+
+    /// Marks current text as saved. Newly constructed buffers start clean.
+    pub fn mark_saved(&mut self) {
+        self.end_typing_group();
+        self.saved_state = self.current_state;
+        self.saved_revision = self.revision;
+    }
+
+    /// The revision at the last save, which does not rewind during undo/redo.
+    pub fn saved_revision(&self) -> Revision {
+        self.saved_revision
+    }
+
+    /// Clean means the current history state is the saved state. Independently
+    /// editing to identical contents does not restore the saved history state.
+    pub fn is_dirty(&self) -> bool {
+        self.current_state != self.saved_state
+    }
+
+    fn edit(&mut self, range: TextRange, text: &str, typing: bool) -> Result<Option<Edit>, PositionError> {
+        let removed = self.slice(range)?;
+        if removed == text {
+            if !typing {
+                self.end_typing_group();
+            }
+            return Ok(None);
         }
-        let revision = Revision(self.revision.0.checked_add(1).expect("buffer revision exhausted"));
+        let removed = removed.to_owned();
+        if !typing {
+            self.end_typing_group();
+        }
+        let before_state = self.current_state;
+        let edit = self.apply(range, text);
+        let merge = typing
+            && self.typing_group
+            && self
+                .undo
+                .last()
+                .is_some_and(|transaction| transaction.removed.is_empty() && transaction.start.0 + transaction.inserted.len() == range.start().0);
+        if merge {
+            let transaction = self.undo.last_mut().expect("typing group has a transaction");
+            transaction.inserted.push_str(text);
+            transaction.after_state = self.revision;
+        } else {
+            self.undo.push(Transaction {
+                start: range.start(),
+                removed,
+                inserted: text.to_owned(),
+                before_state,
+                after_state: self.revision,
+            });
+        }
+        self.redo.clear();
+        self.current_state = self.revision;
+        self.typing_group = typing;
+        Ok(Some(edit))
+    }
+
+    fn apply(&mut self, range: TextRange, text: &str) -> Edit {
+        let old_revision = self.revision;
+        let new_revision = Revision(old_revision.0.checked_add(1).expect("buffer revision exhausted"));
         self.text.replace_range(range.start().0..range.end().0, text);
         self.line_starts = Self::index_lines(&self.text);
-        self.revision = revision;
-        Ok(())
+        self.revision = new_revision;
+        Edit {
+            old_range: range,
+            new_range: TextRange::new(range.start(), ByteOffset(range.start().0 + text.len())),
+            old_revision,
+            new_revision,
+        }
     }
 
     fn line_bounds(&self, line: usize) -> Result<(usize, usize), PositionError> {

@@ -170,7 +170,7 @@ fn stale_ranges_are_revalidated_before_slicing_or_replacement() {
     buffer.replace(whole, "猫x").unwrap();
     let expected = Err(PositionError::NotCharBoundary { offset: ByteOffset(1) });
     assert_eq!(buffer.slice(stale), expected);
-    assert_eq!(buffer.replace(stale, "bad"), expected.map(|_| ()));
+    assert_eq!(buffer.replace(stale, "bad"), expected.map(|_| None));
     assert_eq!(buffer.text(), "猫x");
     assert_eq!(buffer.revision().get(), 1);
     let whole = buffer.text_range(ByteOffset(0), ByteOffset(4)).unwrap();
