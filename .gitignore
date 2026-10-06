@@ -1,3 +1,5 @@
 /target
 .cargo
 .pre-commit-config.yaml
+ROADMAP.md
+.ignore

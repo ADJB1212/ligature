@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+  workflow_dispatch:
+
+env:
+  RUSTUP_TERM_PROGRESS_WHEN: "never"
+  RUST_BACKTRACE: "1"
+  DO_NOT_TRACK: "1"
+
+permissions:
+  contents: read
+
+jobs:
+  workspace:
+    name: Workspace checks
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Check all workspace targets
+        run: cargo check --locked --workspace --all-targets
+
+      - name: Check Clippy lints
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Run workspace tests
+        run: cargo test --locked --workspace
