@@ -10,6 +10,7 @@ publish = false
 description = "Application startup, action registration, native menus, and application lifecycle"
 
 [dependencies]
+ligature-editor.workspace = true
 ligature-ui.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true

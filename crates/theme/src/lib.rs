@@ -1,6 +1,6 @@
 //! UI colors, typography, spacing, and theme selection.
 
-use gpui::{Hsla, Pixels, Rgba, px, rgb, rgb_to_hsla};
+use gpui::{ColorExt, Hsla, Pixels, Rgba, px, rgb, rgb_to_hsla};
 
 pub struct Colors {
     pub background: Hsla,
@@ -16,6 +16,7 @@ pub struct Colors {
     pub disabled_text: Hsla,
     pub error: Hsla,
     pub error_surface: Hsla,
+    pub selection: Hsla,
 }
 
 pub fn colors() -> Colors {
@@ -33,11 +34,20 @@ pub fn colors() -> Colors {
         disabled_text: rgb_to_hsla(rgb(0x6d7a8a)),
         error: rgb_to_hsla(rgb(0xe8a49c)),
         error_surface: rgb_to_hsla(rgb(0x3a2e32)),
+        selection: rgb_to_hsla(rgb(0xdce3ea)).opacity(0.22),
     }
 }
 
 pub mod typography {
     use super::{Pixels, px};
+
+    pub fn editor_size() -> Pixels {
+        px(15.0)
+    }
+
+    pub fn editor_line_height() -> Pixels {
+        px(22.5)
+    }
 
     pub fn control_size() -> Pixels {
         px(14.0)

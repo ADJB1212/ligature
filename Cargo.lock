@@ -3015,6 +3015,7 @@ dependencies = [
  "gpui-ce",
  "gpui_ce_platform",
  "ligature-core",
+ "ligature-editor",
  "ligature-ui",
  "ligature-workspace",
 ]
@@ -3046,6 +3047,12 @@ version = "0.0.1"
 [[package]]
 name = "ligature-editor"
 version = "0.0.1"
+dependencies = [
+ "gpui-ce",
+ "ligature-buffer",
+ "ligature-theme",
+ "unicode-segmentation",
+]
 
 [[package]]
 name = "ligature-fs"
@@ -3111,6 +3118,8 @@ name = "ligature-workspace"
 version = "0.0.1"
 dependencies = [
  "gpui-ce",
+ "ligature-buffer",
+ "ligature-editor",
  "ligature-theme",
  "ligature-ui",
 ]
