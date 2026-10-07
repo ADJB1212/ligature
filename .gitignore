@@ -1,4 +1,10 @@
 /target
+
+# Runtime TeX bundle installations and generated format caches.
+.ligature-full-*.zip
+ligature-installed-bundle.json
+ligature-bundle-install.lock
+tectonic-*-bundle-*/
 .cargo
 .pre-commit-config.yaml
 ROADMAP.md

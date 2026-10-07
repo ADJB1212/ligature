@@ -2,7 +2,7 @@
 
 use ligature_project::Project;
 use ligature_settings::{BuildSettings, SaveBeforeBuild};
-use ligature_toolchain::BundledResources;
+use ligature_toolchain::{BundledResources, ENGINE_VERSION};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -88,19 +88,12 @@ impl BuildRequest {
         let mut project = Project::open(&self.project_root)?;
         project.set_root_document(&self.root_document)?;
         validate_output(&project.root, &self.output_directory)?;
+        resources.validate()?;
+        resources.prepare_cache()?;
         std::fs::create_dir_all(&self.output_directory).map_err(|error| format!("Could not create build output directory: {error}"))?;
-        if !resources.executable.is_absolute() || !resources.bundle.is_absolute() || !resources.format_cache.is_absolute() {
-            return Err("Executable, bundle, and format-cache paths must be absolute".into());
-        }
-        if !resources.executable.is_file() {
-            return Err(format!("Missing bundled Tectonic executable '{}'", resources.executable.display()));
-        }
-        if !resources.bundle.is_file() {
-            return Err(format!("Missing bundled TeX resources '{}'", resources.bundle.display()));
-        }
-        std::fs::create_dir_all(&resources.format_cache).map_err(|error| format!("Could not create format cache: {error}"))?;
         Ok(BuildSession {
             command: self.command(resources),
+            resources: resources.clone(),
         })
     }
 
@@ -133,15 +126,34 @@ impl BuildRequest {
 
 pub struct BuildSession {
     command: Command,
+    resources: BundledResources,
 }
 
 impl BuildSession {
     pub fn run(&mut self) -> Result<Output, String> {
+        self.resources.validate()?;
+        let version = Command::new(&self.resources.executable)
+            .arg("--version")
+            .output()
+            .map_err(|error| format!("Installation error: could not launch bundled Tectonic: {error}. Reinstall Ligature."))?;
+        if !version.status.success() || String::from_utf8_lossy(&version.stdout).trim() != format!("Tectonic {ENGINE_VERSION}") {
+            return Err(format!(
+                "Installation error: bundled Tectonic must be version {ENGINE_VERSION}. Reinstall Ligature."
+            ));
+        }
         let output = self
             .command
             .output()
             .map_err(|error| format!("Could not launch bundled Tectonic: {error}"))?;
         if !output.status.success() {
+            let diagnostics = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            if let Some(name) = missing_package(&diagnostics)
+                && !self.resources.validate()?.contains(&name)
+            {
+                return Err(format!(
+                    "Unsupported project package or document class '{name}': it is not included in the shipped TeX bundle. Add compatible project-local files or use a supported package.\n{diagnostics}"
+                ));
+            }
             return Err(format!(
                 "Typesetting failed ({}):\n{}{}",
                 output.status,
@@ -150,6 +162,16 @@ impl BuildSession {
             ));
         }
         Ok(output)
+    }
+}
+
+fn missing_package(diagnostics: &str) -> Option<String> {
+    let after = diagnostics.split_once("LaTeX Error: File `")?.1;
+    let (name, rest) = after.split_once('\'')?;
+    if rest.starts_with(" not found") && (name.ends_with(".sty") || name.ends_with(".cls")) {
+        Some(name.into())
+    } else {
+        None
     }
 }
 
@@ -272,9 +294,20 @@ mod tests {
         let resources = BundledResources::new(&project.root.join("resources α"), &project.root.join("cache α")).unwrap();
         std::fs::create_dir_all(resources.executable.parent().unwrap()).unwrap();
         std::fs::create_dir_all(resources.bundle.parent().unwrap()).unwrap();
+        let script = script.replacen(
+            "#!/bin/sh\n",
+            &format!("#!/bin/sh\nif [ \"$1\" = '--version' ]; then printf 'Tectonic {ENGINE_VERSION}\\n'; exit 0; fi\n"),
+            1,
+        );
         std::fs::write(&resources.executable, script).unwrap();
         std::fs::set_permissions(&resources.executable, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::fs::write(&resources.bundle, "fixture").unwrap();
+        let staged = Path::new(ligature_toolchain::BUILT_RESOURCE_DIRECTORY);
+        std::fs::copy(staged.join("tex/ligature-bundle-1.zip"), &resources.bundle).unwrap();
+        std::fs::create_dir_all(resources.fonts.join("otf")).unwrap();
+        for entry in std::fs::read_dir(staged.join("newcomputermodern/otf")).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(entry.path(), resources.fonts.join("otf").join(entry.file_name())).unwrap();
+        }
         resources
     }
 
@@ -347,7 +380,7 @@ mod tests {
                 .unwrap()
                 .run()
                 .unwrap_err()
-                .contains("Could not launch")
+                .contains("Installation error: could not launch")
         );
     }
 
@@ -371,6 +404,87 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn first_and_repeat_builds_use_shipped_fonts_and_bibtex_with_an_empty_offline_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let request = ready(&project, &BuildSettings::default());
+        std::fs::write(
+            request.root_document(),
+            concat!("\\documentclass{article}\n", include_str!("../../../tools/package-resources/smoke.tex")),
+        )
+        .unwrap();
+        std::fs::write(
+            request.filesystem_root().join("references.bib"),
+            "@book{knuth,author={Donald Knuth},title={The TeXbook},year={1984},publisher={Addison-Wesley}}\n",
+        )
+        .unwrap();
+        let resources = BundledResources::new(
+            Path::new(ligature_toolchain::BUILT_RESOURCE_DIRECTORY),
+            &directory.path().join("empty cache"),
+        )
+        .unwrap();
+        assert!(!resources.format_cache.exists());
+        for _ in 0..2 {
+            let mut session = request.create_session(&resources).unwrap();
+            session
+                .command
+                .env("HTTP_PROXY", "http://127.0.0.1:9")
+                .env("HTTPS_PROXY", "http://127.0.0.1:9")
+                .env("ALL_PROXY", "http://127.0.0.1:9");
+            let output = session.run().unwrap();
+            assert!(!String::from_utf8_lossy(&output.stdout).contains("downloading"));
+            let pdf = std::fs::read(request.output_directory().join("main α.pdf")).unwrap();
+            assert!(pdf.starts_with(b"%PDF-"));
+            assert!(request.output_directory().join("main α.synctex.gz").is_file());
+        }
+        assert!(std::fs::read_dir(resources.format_cache.join("formats")).unwrap().next().is_some());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unsupported_project_packages_are_distinct_from_installation_errors() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let request = ready(&project, &BuildSettings::default());
+        std::fs::write(
+            request.root_document(),
+            "\\documentclass{article}\n\\usepackage{ligature-not-shipped}\n\\begin{document}Test\\end{document}\n",
+        )
+        .unwrap();
+        let resources = BundledResources::new(Path::new(ligature_toolchain::BUILT_RESOURCE_DIRECTORY), &directory.path().join("cache")).unwrap();
+        let error = request.create_session(&resources).unwrap().run().unwrap_err();
+        assert!(
+            error.contains("Unsupported project package") && error.contains("ligature-not-shipped.sty"),
+            "{error}"
+        );
+        std::fs::write(
+            request.filesystem_root().join("ligature-not-shipped.sty"),
+            "\\ProvidesPackage{ligature-not-shipped}\n",
+        )
+        .unwrap();
+        request.create_session(&resources).unwrap().run().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn incompatible_engine_versions_are_installation_errors() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let request = ready(&project, &BuildSettings::default());
+        let resources = resources(&project, "#!/bin/sh\nexit 0\n");
+        std::fs::write(&resources.executable, "#!/bin/sh\nprintf 'Tectonic wrong-version\\n'\n").unwrap();
+        assert!(
+            request
+                .create_session(&resources)
+                .unwrap()
+                .run()
+                .unwrap_err()
+                .contains("Installation error: bundled Tectonic must be version")
+        );
+    }
+
     #[test]
     fn session_creation_revalidates_roots_and_reports_missing_resources() {
         let directory = tempfile::tempdir().unwrap();
@@ -386,7 +500,7 @@ mod tests {
         let Err(error) = request.create_session(&resources) else {
             panic!("expected missing bundle")
         };
-        assert!(error.contains("bundled TeX resources"));
+        assert!(error.contains("Installation error") && error.contains("ligature-bundle-1.zip"));
         std::fs::remove_file(request.root_document()).unwrap();
         assert!(request.create_session(&resources).is_err());
     }

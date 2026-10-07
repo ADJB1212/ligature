@@ -1,0 +1,12 @@
+\usepackage{amsmath,amssymb,graphicx,xcolor,geometry,booktabs,enumitem,natbib,hyperref}
+\usepackage{newcomputermodern}
+\begin{document}
+New Computer Modern: \textbf{bold}, \textit{italic}, \textbf{\textit{both}},
+{\sffamily sans \textbf{bold} \textit{italic}}, {\ttfamily mono \textbf{bold} \textit{italic}}.
+\[ \int_0^1 x^2\,dx = \frac13 \quad \mathbb{R} \sum_{n=1}^3 n \]
+\begin{enumerate}[label=\alph*)]\item A list.\end{enumerate}
+\begin{tabular}{ll}\toprule A & B\\\midrule C & D\\\bottomrule\end{tabular}
+\textcolor{blue}{Color} and \href{https://example.com}{a link}. See \citep{knuth}.
+\bibliographystyle{plainnat}
+\bibliography{references}
+\end{document}

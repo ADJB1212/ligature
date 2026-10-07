@@ -2,6 +2,7 @@
 
 mod lifecycle;
 mod project;
+mod resources;
 mod search;
 mod session;
 
@@ -114,6 +115,7 @@ pub struct Workspace {
     project_task: Option<Task<()>>,
     session_path: Option<PathBuf>,
     search: search::SearchUi,
+    bundle_ui: resources::BundleUi,
 }
 
 struct Tab {
@@ -159,6 +161,7 @@ impl Workspace {
             project_task: None,
             session_path: None,
             search,
+            bundle_ui: resources::BundleUi::default(),
         }
     }
 
@@ -429,6 +432,7 @@ impl Render for Workspace {
                     .on_action(cx.listener(|this, _: &FindPrevious, window, cx| this.navigate_search(true, window, cx)))
             })
             .child(self.render_toolbar(dirty, &name, unavailable, cx))
+            .when(self.bundle_ui.visible, |view| view.child(self.render_resources(cx)))
             .when_some(self.error.clone(), |view, error| view.child(inline_error(error)))
             .children(self.settings_errors.iter().map(|error| inline_error(error.clone())))
             .when(self.search.visible, |view| view.child(self.render_search(cx)))
@@ -498,6 +502,14 @@ impl Workspace {
                     .disabled(unavailable)
                     .selected(self.search.visible)
                     .on_click(cx.listener(|this, _, window, cx| this.show_search(false, false, window, cx))),
+            )
+            .child(
+                Button::new("tex-resources", "TeX Resources")
+                    .selected(self.bundle_ui.visible)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.bundle_ui.visible = !this.bundle_ui.visible;
+                        cx.notify();
+                    })),
             )
             .child(
                 div()

@@ -9,8 +9,21 @@ license.workspace = true
 publish = false
 description = "Bundled TeX resource locations and compatibility metadata"
 
-[dev-dependencies]
+[dependencies]
+hex = { version = "0.4", default-features = false, features = ["std"] }
+dirs = {version = "7", default-features = false }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+sha2 = { version = "0.11", default-features = false, features = ["alloc", "oid"] }
+tar = { version = "0.4", default-features = false }
 tempfile = { version = "3", default-features = false, features = [] }
+zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
+
+[build-dependencies]
+hex = "0.4"
+sha2 = "0.11"
+zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

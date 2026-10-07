@@ -15,7 +15,7 @@ ligature-app.workspace = true
 workspace = true
 
 [workspace]
-members = [".", "crates/*"]
+members = [".", "crates/*", "tools/package-resources"]
 default-members = ["."]
 resolver = "3"
 

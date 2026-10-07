@@ -9,8 +9,13 @@ use std::{
 
 const ENGINE_VERSION: &str = "0.17.0";
 
+#[path = "src/bundle.rs"]
+mod bundle;
+
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-changed=src/bundle.rs");
+    println!("cargo::rerun-if-changed=resources");
     for name in ["PKG_CONFIG_PATH", "CC", "CXX"] {
         println!("cargo::rerun-if-env-changed={name}");
     }
@@ -88,12 +93,36 @@ fn build_engine() -> Result<(), String> {
     )?;
     sign(&executable)?;
     run(Command::new(&executable).arg("--version"))?;
+    stage_resources(&resources)?;
 
     for source in bundled.values() {
         println!("cargo::rerun-if-changed={}", source.display());
     }
     println!("cargo::rustc-env=LIGATURE_TECTONIC_VERSION={ENGINE_VERSION}");
     println!("cargo::rustc-env=LIGATURE_TECTONIC_RESOURCES={}", resources.display());
+    Ok(())
+}
+
+fn stage_resources(resources: &Path) -> Result<(), String> {
+    let source = Path::new(&env::var("CARGO_MANIFEST_DIR").map_err(|error| error.to_string())?).join("resources/ligature-bundle-1.zip");
+    let mut bundle = bundle::LocalBundle::open(&source)?;
+    let tex = resources.join("tex");
+    let fonts = resources.join("newcomputermodern/otf");
+    fs::create_dir_all(&tex).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&fonts).map_err(|error| error.to_string())?;
+    fs::copy(&source, tex.join("ligature-bundle-1.zip")).map_err(|error| error.to_string())?;
+    let names: Vec<_> = bundle.names().filter(|name| name.ends_with(".otf")).map(str::to_owned).collect();
+    for name in names {
+        if Path::new(&name).file_name().and_then(|name| name.to_str()) != Some(name.as_str()) {
+            return Err("Packaged font names must be plain filenames".into());
+        }
+        fs::write(fonts.join(&name), bundle.read(&name)?.ok_or("Missing packaged font")?).map_err(|error| error.to_string())?;
+    }
+    fs::write(
+        resources.join("newcomputermodern/LICENSE.txt"),
+        bundle.read("NewComputerModern-LICENSE.txt")?.ok_or("Missing font license")?,
+    )
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 

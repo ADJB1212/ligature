@@ -1,0 +1,13 @@
+[package]
+name = "ligature-package-resources"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+hex = "0.4"
+sha2 = { version = "0.11", default-features = false, features = ["alloc", "oid"] }
+zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true
