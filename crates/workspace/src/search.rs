@@ -12,8 +12,8 @@ use ligature_buffer::{DocumentId, Revision};
 use ligature_editor::Editor;
 use ligature_fs::FileState;
 use ligature_search::{BufferVersion, Cancellation, FileReplacement, ProjectResults, Query, ReplacementPreview, SourceSnapshot};
-use ligature_theme::{colors, spacing};
-use ligature_ui::{Button, TextInput, inline_error};
+use ligature_theme::{colors, spacing, typography};
+use ligature_ui::{Button, TextInput, caption, inline_error};
 
 pub(super) struct SearchUi {
     pub visible: bool,
@@ -449,13 +449,16 @@ impl Workspace {
     pub(super) fn render_search(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (current, count) = self.editor.read(cx).search_status();
         let disabled = self.busy || self.document.is_none() || count == 0;
+        let colors = colors();
         div()
             .key_context("LigatureSearch")
             .flex()
             .flex_col()
             .flex_shrink_0()
             .gap(spacing::small())
-            .p(spacing::medium())
+            .px(spacing::medium())
+            .py(spacing::medium())
+            .bg(colors.chrome)
             .when_some(self.search.error.clone(), |view, error| view.child(inline_error(error)))
             .child(
                 div()
@@ -466,25 +469,20 @@ impl Workspace {
                     .gap(spacing::small())
                     .on_action(ligature_ui::focus_next)
                     .on_action(ligature_ui::focus_previous)
-                    .child(div().w(px(200.0)).child(self.search.input.clone()))
-                    .child(div().w(px(200.0)).child(self.search.replacement.clone()))
+                    .child(div().w(px(220.0)).child(self.search.input.clone()))
+                    .child(div().w(px(220.0)).child(self.search.replacement.clone()))
                     .child(
-                        Button::new(
-                            "match-case",
-                            if self.search.query.options.case_sensitive {
-                                "Case: On"
-                            } else {
-                                "Case: Off"
-                            },
-                        )
-                        .disabled(self.busy)
-                        .on_click(cx.listener(|workspace, _, _, cx| {
-                            workspace.search.query.options.case_sensitive = !workspace.search.query.options.case_sensitive;
-                            workspace.search_options_changed(cx);
-                        })),
+                        Button::new("match-case", "Match Case")
+                            .selected(self.search.query.options.case_sensitive)
+                            .disabled(self.busy)
+                            .on_click(cx.listener(|workspace, _, _, cx| {
+                                workspace.search.query.options.case_sensitive = !workspace.search.query.options.case_sensitive;
+                                workspace.search_options_changed(cx);
+                            })),
                     )
                     .child(
-                        Button::new("whole-word", if self.search.query.options.whole_word { "Word: On" } else { "Word: Off" })
+                        Button::new("whole-word", "Whole Word")
+                            .selected(self.search.query.options.whole_word)
                             .disabled(self.busy)
                             .on_click(cx.listener(|workspace, _, _, cx| {
                                 workspace.search.query.options.whole_word = !workspace.search.query.options.whole_word;
@@ -493,14 +491,13 @@ impl Workspace {
                     )
                     .child(
                         Button::new("search-scope", if self.search.project_scope { "Project" } else { "Document" })
+                            .selected(self.search.project_scope)
                             .disabled(self.busy || self.project.is_none())
                             .on_click(cx.listener(|workspace, _, window, cx| {
                                 workspace.show_search(!workspace.search.project_scope, false, window, cx);
                             })),
                     )
-                    .child(
-                        Button::new("close-search", "Close Find").on_click(cx.listener(|workspace, _, window, cx| workspace.hide_search(window, cx))),
-                    ),
+                    .child(Button::new("close-search", "Done").on_click(cx.listener(|workspace, _, window, cx| workspace.hide_search(window, cx)))),
             )
             .when(!self.search.project_scope, |view| {
                 view.child(
@@ -509,7 +506,7 @@ impl Workspace {
                         .flex_wrap()
                         .gap(spacing::small())
                         .items_center()
-                        .child(format!("{} of {count}", current.map_or(0, |index| index + 1)))
+                        .child(caption(format!("{} of {count}", current.map_or(0, |index| index + 1))))
                         .child(
                             Button::new("previous-match", "Previous")
                                 .disabled(disabled)
@@ -527,6 +524,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new("replace-all", "Replace All")
+                                .filled()
                                 .disabled(disabled)
                                 .on_click(cx.listener(|workspace, _, window, cx| workspace.replace_document_matches(true, window, cx))),
                         ),
@@ -539,15 +537,15 @@ impl Workspace {
                         .flex_wrap()
                         .items_center()
                         .gap(spacing::small())
-                        .child(if self.search.applying {
-                            "Applying replacements...".into()
+                        .child(caption(if self.search.applying {
+                            "Applying replacements...".to_owned()
                         } else if self.search.previewing {
-                            "Preparing preview...".into()
+                            "Preparing preview...".to_owned()
                         } else if self.search.running {
-                            "Searching...".into()
+                            "Searching...".to_owned()
                         } else {
                             format!("{} matches in {} files", self.search.results.count(), self.search.results.files.len())
-                        })
+                        }))
                         .child(
                             Button::new("refresh-search", "Refresh")
                                 .disabled(self.busy)
@@ -604,7 +602,10 @@ impl Workspace {
                 ResultRow::File(file) => {
                     let file = &self.search.results.files[file];
                     div()
-                        .h(px(32.0))
+                        .h(px(28.0))
+                        .flex()
+                        .items_center()
+                        .text_size(typography::small_size())
                         .text_color(colors().text)
                         .child(format!("{} ({} matches)", self.project_label(&file.path), file.matches.len()))
                         .into_any_element()
@@ -613,10 +614,13 @@ impl Workspace {
                     let result = &self.search.results.files[file].matches[matched];
                     let generation = self.search.generation;
                     div()
-                        .h(px(32.0))
+                        .h(px(28.0))
                         .overflow_hidden()
+                        .flex()
+                        .items_center()
                         .child(
                             Button::new(("search-result", index), format!("{}:{}  {}", result.line, result.column, result.excerpt))
+                                .quiet()
                                 .disabled(self.busy)
                                 .on_click(cx.listener(move |workspace, _, window, cx| {
                                     if workspace.search.generation != generation {
@@ -652,9 +656,11 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(spacing::small())
-            .child("Review replacements. Open documents change in memory; other files are saved atomically.")
+            .child(caption(
+                "Review replacements. Open documents change in memory; other files are saved atomically.",
+            ))
             .when(self.search.preview_stale, |view| {
-                view.child("Documents changed since this preview. Changed files will be skipped.")
+                view.child(caption("Documents changed since this preview. Changed files will be skipped."))
             })
             .child(
                 uniform_list(
@@ -666,6 +672,7 @@ impl Workspace {
             )
             .child(
                 Button::new("apply-project-replacement", format!("Apply to {} Files", preview.files.len()))
+                    .filled()
                     .disabled(self.busy || preview.files.is_empty())
                     .on_click(cx.listener(|workspace, _, window, cx| workspace.apply_project_preview(window, cx))),
             )
@@ -681,21 +688,25 @@ impl Workspace {
                 ResultRow::File(index) => {
                     let file = &preview.files[index];
                     div()
-                        .h(px(64.0))
+                        .h(px(28.0))
+                        .flex()
+                        .items_center()
+                        .text_size(typography::small_size())
                         .child(format!("{}: {} replacements", self.project_label(&file.file.path), file.edit.count))
                         .into_any_element()
                 }
                 ResultRow::Match(file, matched) => {
                     let file = &preview.files[file];
                     div()
-                        .h(px(64.0))
+                        .h(px(48.0))
                         .overflow_hidden()
                         .flex()
                         .flex_col()
-                        .child(format!(
+                        .justify_center()
+                        .child(caption(format!(
                             "Before {}: {}",
                             file.file.matches[matched].line, file.file.matches[matched].excerpt
-                        ))
+                        )))
                         .child(format!(
                             "After {}: {}",
                             file.after_matches[matched].line, file.after_matches[matched].excerpt

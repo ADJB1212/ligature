@@ -4,7 +4,10 @@ use gpui::{ColorExt, Hsla, Pixels, Rgba, px, rgb, rgb_to_hsla};
 
 pub struct Colors {
     pub background: Hsla,
+    pub chrome: Hsla,
     pub surface: Hsla,
+    pub gutter: Hsla,
+    pub hover: Hsla,
     pub text: Hsla,
     pub muted_text: Hsla,
     pub border: Hsla,
@@ -18,16 +21,21 @@ pub struct Colors {
     pub error_surface: Hsla,
     pub selection: Hsla,
     pub search_match: Hsla,
+    pub current_line: Hsla,
 }
 
 pub fn colors() -> Colors {
+    let paper = rgb_to_hsla(rgb(0xdce3ea));
     Colors {
         background: rgb_to_hsla(rgb(0x1a2330)),
+        chrome: rgb_to_hsla(rgb(0x151c27)),
         surface: rgb_to_hsla(rgb(0x232d3c)),
-        text: rgb_to_hsla(rgb(0xdce3ea)),
+        gutter: rgb_to_hsla(rgb(0x161d28)),
+        hover: rgb_to_hsla(rgb(0x2a3544)),
+        text: paper,
         muted_text: rgb_to_hsla(rgb(0x8b97a8)),
         border: rgb_to_hsla(rgb(0x3a4a5c)),
-        accent: rgb_to_hsla(rgb(0xdce3ea)),
+        accent: paper,
         accent_hover: rgb_to_hsla(rgb(0xf2f5f8)),
         on_accent: rgb_to_hsla(rgb(0x1a2330)),
         focus: rgb_to_hsla(rgb(0x9eb0c4)),
@@ -35,8 +43,9 @@ pub fn colors() -> Colors {
         disabled_text: rgb_to_hsla(rgb(0x6d7a8a)),
         error: rgb_to_hsla(rgb(0xe8a49c)),
         error_surface: rgb_to_hsla(rgb(0x3a2e32)),
-        selection: rgb_to_hsla(rgb(0xdce3ea)).opacity(0.22),
-        search_match: rgb_to_hsla(rgb(0xdce3ea)).opacity(0.12),
+        selection: paper.opacity(0.22),
+        search_match: paper.opacity(0.12),
+        current_line: paper.opacity(0.05),
     }
 }
 
@@ -52,13 +61,15 @@ pub mod typography {
     }
 
     pub fn control_size() -> Pixels {
-        px(14.0)
+        px(13.0)
     }
+
     pub fn small_size() -> Pixels {
-        px(12.0)
+        px(11.0)
     }
+
     pub fn line_height() -> Pixels {
-        px(20.0)
+        px(18.0)
     }
 }
 
@@ -75,10 +86,13 @@ pub mod spacing {
         px(16.0)
     }
     pub fn control_height() -> Pixels {
-        px(32.0)
+        px(28.0)
+    }
+    pub fn compact_height() -> Pixels {
+        px(24.0)
     }
     pub fn radius() -> Pixels {
-        px(4.0)
+        px(3.0)
     }
     pub fn pane_boundary() -> Pixels {
         px(6.0)

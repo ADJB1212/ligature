@@ -1,9 +1,9 @@
-use std::ops::Range;
+use std::{ops::Range, time::Duration};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementInputHandler, EntityInputHandler, FocusHandle, Focusable, Font, IntoElement, KeyBinding,
-    KeyDownEvent, MouseButton, Pixels, Point, Render, ShapedLine, SharedString, TextRun, UTF16Selection, Window, actions, canvas, div, fill, point,
-    prelude::*, px, size,
+    KeyDownEvent, MouseButton, Pixels, Point, Render, ShapedLine, SharedString, Task, TextRun, UTF16Selection, Window, actions, canvas, div, fill,
+    point, prelude::*, px, size,
 };
 use ligature_buffer::Buffer;
 use ligature_theme::{colors, typography};
@@ -42,6 +42,9 @@ pub struct Editor {
     line_height: Pixels,
     preferred_x: Option<Pixels>,
     reveal_caret: bool,
+    caret_on: bool,
+    blink: Option<Task<()>>,
+    blink_epoch: u64,
     dragging: bool,
     search_query: ligature_search::Query,
     search_error: Option<String>,
@@ -64,6 +67,9 @@ impl Editor {
             line_height: typography::editor_line_height(),
             preferred_x: None,
             reveal_caret: true,
+            caret_on: true,
+            blink: None,
+            blink_epoch: 0,
             dragging: false,
             search_query: ligature_search::Query::default(),
             search_error: None,
@@ -187,7 +193,44 @@ impl Editor {
         self.reveal_caret = true;
         self.refresh_search();
         window.focus(&self.focus, cx);
+        self.restart_blink(cx);
         cx.notify();
+    }
+
+    fn restart_blink(&mut self, cx: &mut Context<Self>) {
+        self.caret_on = true;
+        self.blink_epoch += 1;
+        let epoch = self.blink_epoch;
+        self.blink = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(CARET_BLINK).await;
+                let cont = this
+                    .update(cx, |editor, cx| {
+                        if editor.blink_epoch != epoch {
+                            return false;
+                        }
+                        editor.caret_on = !editor.caret_on;
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !cont {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn ensure_blink(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.focus.is_focused(window) {
+            if self.blink.is_none() {
+                self.restart_blink(cx);
+            }
+        } else {
+            self.blink = None;
+            self.blink_epoch += 1;
+            self.caret_on = false;
+        }
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -573,6 +616,12 @@ impl Editor {
                     text_bounds.left() - self.scroll.x,
                     self.bounds.top() + self.line_height * *index as f32 - self.scroll.y,
                 );
+                if *index == caret_line {
+                    window.paint_quad(fill(
+                        Bounds::new(point(text_bounds.left(), origin.y), size(text_bounds.size.width, self.line_height)),
+                        colors.current_line,
+                    ));
+                }
                 let line_end = if index + 1 < self.state.line_count() {
                     self.state.line_range(index + 1).start
                 } else {
@@ -614,7 +663,7 @@ impl Editor {
                         colors.text,
                     ));
                 }
-                if *index == caret_line && self.focus.is_focused(window) {
+                if *index == caret_line && self.focus.is_focused(window) && self.caret_on {
                     window.paint_quad(fill(
                         Bounds::new(
                             point(origin.x + line.x_for_byte(self.state.caret()), origin.y),
@@ -628,7 +677,14 @@ impl Editor {
         window.with_content_mask(Some(gpui::ContentMask { bounds: self.bounds }), |window| {
             window.paint_quad(fill(
                 Bounds::new(self.bounds.origin, size(self.gutter, self.bounds.size.height)),
-                colors.background,
+                colors.gutter,
+            ));
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(self.bounds.left() + self.gutter - px(1.0), self.bounds.top()),
+                    size(px(1.0), self.bounds.size.height),
+                ),
+                colors.border,
             ));
             for (index, _, number) in lines {
                 let origin = point(
@@ -643,6 +699,8 @@ impl Editor {
     }
 }
 
+const CARET_BLINK: Duration = Duration::from_millis(530);
+
 fn reveal(scroll: Pixels, viewport: Pixels, position: Pixels, extent: Pixels) -> Pixels {
     if position < scroll {
         position
@@ -654,7 +712,8 @@ fn reveal(scroll: Pixels, viewport: Pixels, position: Pixels, extent: Pixels) ->
 }
 
 impl Render for Editor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_blink(window, cx);
         let entity = cx.entity();
         let paint_entity = entity.clone();
         div()
@@ -699,5 +758,30 @@ impl Render for Editor {
                 )
                 .size_full(),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{AppContext, TestAppContext};
+    use ligature_buffer::Buffer;
+
+    #[test]
+    fn focused_caret_blinks_and_reappears_after_movement() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|_, cx| Editor::new(Buffer::from_text("ab"), cx));
+        let editor = window.root(&mut cx).unwrap();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.focus(&editor.focus_handle(cx), cx);
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+        assert!(editor.read_with(&cx, |editor, _| editor.caret_on));
+        cx.executor().advance_clock(CARET_BLINK);
+        cx.run_until_parked();
+        assert!(!editor.read_with(&cx, |editor, _| editor.caret_on));
+        cx.simulate_keystrokes(window.into(), "right");
+        assert!(editor.read_with(&cx, |editor, _| editor.caret_on));
     }
 }

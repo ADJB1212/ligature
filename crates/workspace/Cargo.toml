@@ -21,8 +21,8 @@ ligature-settings.workspace = true
 ligature-search.workspace = true
 
 [dev-dependencies]
-gpui = { workspace = true, features = ["test-support"] }
-tempfile = "3.27"
+gpui = { workspace = true, default-features = false, features = ["test-support"] }
+tempfile = { version = "3", default-features = false, features = [] }
 
 [lints]
 workspace = true

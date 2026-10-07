@@ -7,8 +7,8 @@ use std::{
 use gpui::{AsyncWindowContext, Context, IntoElement, PathPromptOptions, WeakEntity, Window, div, prelude::*, px};
 use ligature_project::{IncludeGraph, Project};
 use ligature_settings::{PROJECT_FILE, Settings};
-use ligature_theme::spacing;
-use ligature_ui::{Button, inline_error};
+use ligature_theme::{colors, spacing};
+use ligature_ui::{Button, caption, inline_error};
 
 use crate::{Workspace, lifecycle::Intent};
 
@@ -220,43 +220,50 @@ impl Workspace {
         let project = self.project.as_ref().expect("project tree has project");
         let mut rows = Vec::new();
         self.tree_rows(&project.root, 0, &mut rows);
+        let colors = colors();
+        let active_path = self.document.as_ref().and_then(|document| document.path.as_ref());
         div()
             .id("project-tree")
-            .w(px(240.0))
+            .w(px(220.0))
             .flex_shrink_0()
             .overflow_y_scroll()
-            .p(spacing::medium())
+            .px(spacing::medium())
+            .py(spacing::medium())
+            .bg(colors.chrome)
+            .child(caption("PROJECT"))
             .child(project.root.file_name().unwrap_or_default().to_string_lossy().into_owned())
             .when_some(project.root_document.as_ref(), |view, path| {
-                view.child(format!("Root: {}", path.display()))
+                view.child(caption(format!("Root {}", path.display())))
             })
+            .child(div().h(spacing::medium()))
             .children(rows.into_iter().enumerate().map(|(index, (path, depth, directory, error))| {
                 if let Some(error) = error {
-                    return div().ml(px(depth as f32 * 12.0)).child(inline_error(error));
+                    return div().pl(px(depth as f32 * 12.0)).child(inline_error(error));
                 }
                 let expanded = self.expanded.contains(&path);
+                let selected = active_path == Some(&path);
                 let label = format!(
                     "{}{}",
                     if directory { if expanded { "- " } else { "+ " } } else { "" },
                     path.file_name().unwrap_or_default().to_string_lossy()
                 );
-                div()
-                    .ml(px(depth as f32 * 12.0))
-                    .child(
-                        Button::new(("tree-entry", index), label)
-                            .disabled(self.busy)
-                            .on_click(cx.listener(move |workspace, _, window, cx| {
-                                if directory {
-                                    if !workspace.expanded.remove(&path) {
-                                        workspace.expanded.insert(path.clone());
-                                    }
-                                    workspace.start_project_refresh(window, cx);
-                                    cx.notify();
-                                } else {
-                                    workspace.start(Intent::OpenPath(path.clone()), window, cx);
+                div().pl(px(depth as f32 * 12.0)).child(
+                    Button::new(("tree-entry", index), label)
+                        .quiet()
+                        .selected(selected)
+                        .disabled(self.busy)
+                        .on_click(cx.listener(move |workspace, _, window, cx| {
+                            if directory {
+                                if !workspace.expanded.remove(&path) {
+                                    workspace.expanded.insert(path.clone());
                                 }
-                            })),
-                    )
+                                workspace.start_project_refresh(window, cx);
+                                cx.notify();
+                            } else {
+                                workspace.start(Intent::OpenPath(path.clone()), window, cx);
+                            }
+                        })),
+                )
             }))
             .children(
                 self.includes

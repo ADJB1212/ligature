@@ -13,10 +13,10 @@ description = "Document and project text search, result indexing, and replacemen
 ligature-buffer.workspace = true
 ligature-fs.workspace = true
 ligature-project.workspace = true
-regex = "1"
+regex = { version = "1", default-features = false, features = ["perf", "std", "unicode"] }
 
 [dev-dependencies]
-tempfile = "3.27"
+tempfile = { version = "3", default-features = false, features = [] }
 
 [lints]
 workspace = true

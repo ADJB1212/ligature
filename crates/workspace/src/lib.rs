@@ -18,7 +18,7 @@ use ligature_buffer::Buffer;
 use ligature_editor::Editor;
 use ligature_fs::{FileState, FileWatcher, LoadedFile};
 use ligature_theme::{colors, spacing, typography};
-use ligature_ui::{Button, SplitPane, inline_error};
+use ligature_ui::{Button, SplitPane, caption, inline_error, rule};
 
 use lifecycle::Intent;
 
@@ -428,91 +428,11 @@ impl Render for Workspace {
                     .on_action(cx.listener(|this, _: &FindNext, window, cx| this.navigate_search(false, window, cx)))
                     .on_action(cx.listener(|this, _: &FindPrevious, window, cx| this.navigate_search(true, window, cx)))
             })
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(spacing::small())
-                    .p(spacing::medium())
-                    .flex_shrink_0()
-                    .child(
-                        Button::new("new", "New")
-                            .disabled(self.busy)
-                            .on_click(cx.listener(|this, _, window, cx| this.start(Intent::New, window, cx))),
-                    )
-                    .child(
-                        Button::new("open", "Open")
-                            .disabled(self.busy)
-                            .on_click(cx.listener(|this, _, window, cx| this.start(Intent::Open, window, cx))),
-                    )
-                    .child(
-                        Button::new("save", "Save")
-                            .disabled(unavailable)
-                            .on_click(cx.listener(|this, _, window, cx| this.start(Intent::Save, window, cx))),
-                    )
-                    .child(
-                        Button::new("open-project", "Open Folder")
-                            .disabled(self.busy)
-                            .on_click(cx.listener(|this, _, window, cx| this.start(Intent::OpenProject, window, cx))),
-                    )
-                    .child(
-                        Button::new("root-document", "Set Root")
-                            .disabled(unavailable || self.project.is_none() || self.document.as_ref().is_none_or(|document| document.path.is_none()))
-                            .on_click(cx.listener(|this, _, window, cx| this.start(Intent::SelectRoot, window, cx))),
-                    )
-                    .child(
-                        Button::new("save-as", "Save As")
-                            .disabled(unavailable)
-                            .on_click(cx.listener(|this, _, window, cx| this.start(Intent::SaveAs, window, cx))),
-                    )
-                    .child(
-                        Button::new("close", "Close")
-                            .disabled(unavailable)
-                            .on_click(cx.listener(|this, _, window, cx| this.start(Intent::Close, window, cx))),
-                    )
-                    .child(
-                        Button::new("find", "Find")
-                            .disabled(unavailable)
-                            .on_click(cx.listener(|this, _, window, cx| this.show_search(false, false, window, cx))),
-                    )
-                    .child(div().ml(spacing::medium()).child(name).when(dirty, |view| view.child(" *"))),
-            )
+            .child(self.render_toolbar(dirty, &name, unavailable, cx))
             .when_some(self.error.clone(), |view, error| view.child(inline_error(error)))
             .children(self.settings_errors.iter().map(|error| inline_error(error.clone())))
             .when(self.search.visible, |view| view.child(self.render_search(cx)))
-            .child(
-                div()
-                    .id("tabs")
-                    .flex()
-                    .overflow_x_scroll()
-                    .children(self.tabs.iter().enumerate().map(|(index, tab)| {
-                        let (document, editor) = tab.as_ref().map_or_else(
-                            || (self.document.as_ref().expect("active tab exists"), &self.editor),
-                            |tab| (&tab.document, &tab.editor),
-                        );
-                        let dirty = document.diverged || editor.read(cx).state().is_dirty();
-                        div()
-                            .id(("tab", index))
-                            .flex()
-                            .items_center()
-                            .gap(spacing::small())
-                            .p(spacing::medium())
-                            .when(index == self.active_tab, |view| view.bg(colors().surface))
-                            .child(
-                                Button::new(("activate-tab", index), format!("{}{}", document.name(), if dirty { " *" } else { "" }))
-                                    .disabled(self.busy)
-                                    .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(index, window, cx))),
-                            )
-                            .child(
-                                Button::new(("close-tab", index), "x")
-                                    .disabled(self.busy)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.start(Intent::CloseTab(index), window, cx);
-                                    })),
-                            )
-                    })),
-            )
+            .child(self.render_tabs(cx))
             .child(
                 div()
                     .flex()
@@ -524,23 +444,144 @@ impl Render for Workspace {
     }
 }
 
+impl Workspace {
+    fn render_toolbar(&self, dirty: bool, name: &str, unavailable: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = colors();
+        div()
+            .flex()
+            .items_center()
+            .gap(spacing::small())
+            .px(spacing::medium())
+            .py(spacing::small())
+            .flex_shrink_0()
+            .bg(colors.chrome)
+            .child(
+                Button::new("new", "New")
+                    .disabled(self.busy)
+                    .on_click(cx.listener(|this, _, window, cx| this.start(Intent::New, window, cx))),
+            )
+            .child(
+                Button::new("open", "Open")
+                    .disabled(self.busy)
+                    .on_click(cx.listener(|this, _, window, cx| this.start(Intent::Open, window, cx))),
+            )
+            .child({
+                let save = Button::new("save", "Save")
+                    .disabled(unavailable)
+                    .on_click(cx.listener(|this, _, window, cx| this.start(Intent::Save, window, cx)));
+                if dirty { save.filled() } else { save }
+            })
+            .child(
+                Button::new("save-as", "Save As")
+                    .disabled(unavailable)
+                    .on_click(cx.listener(|this, _, window, cx| this.start(Intent::SaveAs, window, cx))),
+            )
+            .child(
+                Button::new("close", "Close")
+                    .disabled(unavailable)
+                    .on_click(cx.listener(|this, _, window, cx| this.start(Intent::Close, window, cx))),
+            )
+            .child(rule())
+            .child(
+                Button::new("open-project", "Open Folder")
+                    .disabled(self.busy)
+                    .on_click(cx.listener(|this, _, window, cx| this.start(Intent::OpenProject, window, cx))),
+            )
+            .child(
+                Button::new("root-document", "Set Root")
+                    .disabled(unavailable || self.project.is_none() || self.document.as_ref().is_none_or(|document| document.path.is_none()))
+                    .on_click(cx.listener(|this, _, window, cx| this.start(Intent::SelectRoot, window, cx))),
+            )
+            .child(rule())
+            .child(
+                Button::new("find", "Find")
+                    .disabled(unavailable)
+                    .selected(self.search.visible)
+                    .on_click(cx.listener(|this, _, window, cx| this.show_search(false, false, window, cx))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_w(gpui::px(0.0))
+                    .justify_end()
+                    .child(caption(format!("{name}{}", if dirty { " *" } else { "" }))),
+            )
+    }
+
+    fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = colors();
+        div()
+            .id("tabs")
+            .flex()
+            .overflow_x_scroll()
+            .flex_shrink_0()
+            .bg(colors.chrome)
+            .children(self.tabs.iter().enumerate().map(|(index, tab)| {
+                let (document, editor) = tab.as_ref().map_or_else(
+                    || (self.document.as_ref().expect("active tab exists"), &self.editor),
+                    |tab| (&tab.document, &tab.editor),
+                );
+                let dirty = document.diverged || editor.read(cx).state().is_dirty();
+                let active = index == self.active_tab;
+                div()
+                    .id(("tab", index))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .px(spacing::small())
+                            .when(active, |view| view.bg(colors.surface))
+                            .child(
+                                Button::new(("activate-tab", index), format!("{}{}", document.name(), if dirty { " *" } else { "" }))
+                                    .quiet()
+                                    .selected(active)
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(index, window, cx))),
+                            )
+                            .child(Button::new(("close-tab", index), "x").quiet().disabled(self.busy).on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.start(Intent::CloseTab(index), window, cx);
+                                },
+                            ))),
+                    )
+                    .child(div().h(gpui::px(2.0)).bg(if active { colors.text } else { gpui::transparent_black() }))
+            }))
+    }
+}
+
 struct EmptyEditor;
 impl Render for EmptyEditor {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().p(spacing::large()).child("Create or open a document.")
+        let colors = colors();
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(spacing::small())
+            .bg(colors.background)
+            .child(caption("DOCUMENT"))
+            .child("Create or open a TeX file.")
     }
 }
 
 struct PreviewPlaceholder;
 impl Render for PreviewPlaceholder {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = colors();
         div()
             .size_full()
             .flex()
             .flex_col()
-            .gap(spacing::medium())
-            .p(spacing::large())
-            .child("PDF Preview")
-            .child(div().text_color(colors().muted_text).child("No compiled document."))
+            .items_center()
+            .justify_center()
+            .gap(spacing::small())
+            .bg(colors.chrome)
+            .child(caption("PROOF"))
+            .child(div().text_color(colors.muted_text).child("No compiled document."))
     }
 }

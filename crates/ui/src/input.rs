@@ -1,8 +1,8 @@
-use std::ops::Range;
+use std::{ops::Range, time::Duration};
 
 use gpui::{
     App, Bounds, Context, CursorStyle, ElementInputHandler, EntityInputHandler, FocusHandle, Focusable, IntoElement, KeyDownEvent, MouseButton,
-    Pixels, Point, Render, ShapedLine, TextRun, UTF16Selection, Window, canvas, div, fill, point, prelude::*, px, size,
+    Pixels, Point, Render, ShapedLine, Task, TextRun, UTF16Selection, Window, canvas, div, fill, point, prelude::*, px, size,
 };
 use ligature_theme::{colors, spacing, typography};
 
@@ -15,6 +15,9 @@ pub struct TextInput {
     line: Option<ShapedLine>,
     bounds: Bounds<Pixels>,
     scroll: Pixels,
+    caret_on: bool,
+    blink: Option<Task<()>>,
+    blink_epoch: u64,
 }
 
 impl TextInput {
@@ -28,6 +31,45 @@ impl TextInput {
             line: None,
             bounds: Bounds::default(),
             scroll: px(0.0),
+            caret_on: true,
+            blink: None,
+            blink_epoch: 0,
+        }
+    }
+
+    fn restart_blink(&mut self, cx: &mut Context<Self>) {
+        self.caret_on = true;
+        self.blink_epoch += 1;
+        let epoch = self.blink_epoch;
+        self.blink = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(CARET_BLINK).await;
+                let cont = this
+                    .update(cx, |input, cx| {
+                        if input.blink_epoch != epoch {
+                            return false;
+                        }
+                        input.caret_on = !input.caret_on;
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !cont {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn ensure_blink(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.focus.is_focused(window) {
+            if self.blink.is_none() {
+                self.restart_blink(cx);
+            }
+        } else {
+            self.blink = None;
+            self.blink_epoch += 1;
+            self.caret_on = false;
         }
     }
 
@@ -39,6 +81,7 @@ impl TextInput {
         self.text = single_line(text);
         self.cursor = self.text.len();
         self.marked = None;
+        self.restart_blink(cx);
         cx.notify();
     }
 
@@ -74,9 +117,12 @@ impl TextInput {
         self.marked = None;
         window.prevent_default();
         cx.stop_propagation();
+        self.restart_blink(cx);
         cx.notify();
     }
 }
+
+const CARET_BLINK: Duration = Duration::from_millis(530);
 
 fn single_line(text: &str) -> String {
     text.chars().filter(|ch| !ch.is_control()).collect()
@@ -143,6 +189,7 @@ impl EntityInputHandler for TextInput {
             .unwrap_or(self.cursor..self.cursor);
         self.replace(range, text);
         self.marked = None;
+        self.restart_blink(cx);
         cx.notify();
     }
 
@@ -158,6 +205,7 @@ impl EntityInputHandler for TextInput {
             self.cursor = inserted.start + byte_offset(&self.text[inserted.clone()], selected.end);
         }
         self.marked = (!inserted.is_empty()).then_some(inserted);
+        self.restart_blink(cx);
         cx.notify();
     }
 
@@ -184,7 +232,8 @@ impl EntityInputHandler for TextInput {
 }
 
 impl Render for TextInput {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_blink(window, cx);
         let colors = colors();
         let entity = cx.entity();
         let paint_entity = entity.clone();
@@ -198,10 +247,10 @@ impl Render for TextInput {
             .flex()
             .items_center()
             .rounded(spacing::radius())
-            .border_2()
+            .border_1()
             .border_color(colors.border)
             .focus(|style| style.border_color(colors.focus))
-            .bg(colors.background)
+            .bg(colors.chrome)
             .text_size(typography::control_size())
             .line_height(typography::line_height())
             .overflow_hidden()
@@ -218,6 +267,7 @@ impl Render for TextInput {
                         })
                     };
                     this.marked = None;
+                    this.restart_blink(cx);
                     cx.notify();
                 }),
             )
@@ -253,7 +303,7 @@ impl Render for TextInput {
                         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
                             line.paint(origin, bounds.size.height, gpui::TextAlign::Left, None, window, cx)
                                 .expect("input text painting failed");
-                            if focus.is_focused(window) {
+                            if focus.is_focused(window) && paint_entity.read(cx).caret_on {
                                 window.paint_quad(fill(
                                     Bounds::new(point(origin.x + caret, origin.y), size(px(1.0), bounds.size.height)),
                                     colors.text,

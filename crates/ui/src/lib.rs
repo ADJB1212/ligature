@@ -33,12 +33,24 @@ pub fn inline_error(message: impl Into<gpui::SharedString>) -> impl IntoElement 
     div()
         .flex()
         .gap(spacing::medium())
-        .p(spacing::medium())
-        .rounded(spacing::radius())
+        .px(spacing::large())
+        .py(spacing::medium())
         .bg(colors.error_surface)
         .text_color(colors.error)
         .text_size(typography::small_size())
         .line_height(typography::line_height())
         .child("Error:")
         .child(message.into())
+}
+
+pub fn rule() -> impl IntoElement {
+    div().w(gpui::px(1.0)).h(gpui::px(16.0)).flex_shrink_0().bg(colors().border)
+}
+
+pub fn caption(text: impl Into<gpui::SharedString>) -> impl IntoElement {
+    div()
+        .text_size(typography::small_size())
+        .line_height(typography::line_height())
+        .text_color(colors().muted_text)
+        .child(text.into())
 }
