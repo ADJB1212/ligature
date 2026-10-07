@@ -1,1 +1,271 @@
 //! Document and project text search, result indexing, and replacement operations.
+
+mod project;
+
+pub use project::{
+    BufferVersion, FileReplacement, FileResults, ProjectResults, ReplacementPreview, SourceSnapshot, apply_disk_replacement, search_project,
+};
+
+use regex::{Regex, RegexBuilder};
+use std::{
+    ops::Range,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Options {
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Query {
+    pub text: String,
+    pub options: Options,
+}
+
+#[derive(Clone, Default)]
+pub struct Cancellation(Arc<AtomicBool>);
+impl Cancellation {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+    pub fn is_canceled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+pub struct Search {
+    pattern: Option<Regex>,
+    word: Regex,
+    whole_word: bool,
+}
+impl Search {
+    pub fn new(query: &Query) -> Result<Self, String> {
+        let pattern = if query.text.is_empty() {
+            None
+        } else {
+            Some(
+                RegexBuilder::new(&regex::escape(&query.text))
+                    .case_insensitive(!query.options.case_sensitive)
+                    .build()
+                    .map_err(|error| format!("Could not search: {error}"))?,
+            )
+        };
+        Ok(Self {
+            pattern,
+            word: Regex::new(r"^\w$").expect("valid Unicode word pattern"),
+            whole_word: query.options.whole_word,
+        })
+    }
+
+    pub fn find(&self, text: &str) -> Vec<Range<usize>> {
+        self.find_cancellable(text, &Cancellation::default())
+    }
+
+    pub fn find_cancellable(&self, text: &str, cancellation: &Cancellation) -> Vec<Range<usize>> {
+        if cancellation.is_canceled() {
+            return Vec::new();
+        }
+        let Some(pattern) = &self.pattern else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        for matched in pattern.find_iter(text) {
+            if cancellation.is_canceled() {
+                return Vec::new();
+            }
+            let range = matched.range();
+            if self.whole_word && (self.word_char(text[..range.start].chars().next_back()) || self.word_char(text[range.end..].chars().next())) {
+                continue;
+            }
+            found.push(range);
+        }
+        if cancellation.is_canceled() { Vec::new() } else { found }
+    }
+
+    fn word_char(&self, ch: Option<char>) -> bool {
+        ch.is_some_and(|ch| self.word.is_match(ch.encode_utf8(&mut [0; 4])))
+    }
+}
+
+pub fn navigate(matches: &[Range<usize>], selected: &Range<usize>, caret: usize, backwards: bool) -> Option<usize> {
+    if matches.is_empty() {
+        return None;
+    }
+    if let Some(index) = matches
+        .binary_search_by_key(&selected.start, |range| range.start)
+        .ok()
+        .filter(|&index| matches[index] == *selected)
+    {
+        return Some((index + if backwards { matches.len() - 1 } else { 1 }) % matches.len());
+    }
+    if backwards {
+        let next = matches.partition_point(|range| range.start < caret);
+        Some(if next == 0 { matches.len() - 1 } else { next - 1 })
+    } else {
+        let next = matches.partition_point(|range| range.start < caret);
+        Some(if next == matches.len() { 0 } else { next })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplacementEdit {
+    pub range: Range<usize>,
+    pub text: String,
+    pub count: usize,
+}
+
+pub fn replacement_edit(text: &str, matches: &[Range<usize>], replacement: &str) -> Option<ReplacementEdit> {
+    let first = matches.first()?;
+    let last = matches.last()?;
+    let range = first.start..last.end;
+    let mut result = String::new();
+    let mut offset = range.start;
+    for matched in matches {
+        result.push_str(&text[offset..matched.start]);
+        result.push_str(replacement);
+        offset = matched.end;
+    }
+    result.push_str(&text[offset..range.end]);
+    Some(ReplacementEdit {
+        range,
+        text: result,
+        count: matches.len(),
+    })
+}
+
+pub fn relocate_match(original: &str, current: &str, range: &Range<usize>, search: &Search) -> Option<Range<usize>> {
+    let prefix = original
+        .chars()
+        .zip(current.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum::<usize>();
+    let suffix = original[prefix..]
+        .chars()
+        .rev()
+        .zip(current[prefix..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum::<usize>();
+    let candidate = if range.end <= prefix {
+        range.clone()
+    } else if range.start >= original.len() - suffix {
+        let distance = original.len() - range.start;
+        let start = current.len().checked_sub(distance)?;
+        start..start + range.len()
+    } else {
+        return None;
+    };
+    search.find(current).into_iter().find(|matched| matched == &candidate)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Match {
+    pub range: Range<usize>,
+    pub line: usize,
+    pub column: usize,
+    pub excerpt: String,
+}
+impl Match {
+    pub fn new(text: &str, range: Range<usize>) -> Self {
+        let line_start = text[..range.start].rfind('\n').map_or(0, |offset| offset + 1);
+        let line = text[..range.start].bytes().filter(|&byte| byte == b'\n').count() + 1;
+        let column = text[line_start..range.start].chars().count() + 1;
+        let line_end = text[range.start..].find('\n').map_or(text.len(), |offset| range.start + offset);
+        Self::at(text, range, line, column, line_start, line_end)
+    }
+
+    fn at(text: &str, range: Range<usize>, line: usize, column: usize, line_start: usize, line_end: usize) -> Self {
+        let before: String = text[line_start..range.start]
+            .chars()
+            .rev()
+            .take(60)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let after: String = text[range.start..line_end].chars().take(120).collect();
+        Self {
+            line,
+            column,
+            range,
+            excerpt: format!("{before}{after}").trim_end_matches('\r').to_owned(),
+        }
+    }
+}
+
+pub fn describe_matches(text: &str, ranges: Vec<Range<usize>>) -> Vec<Match> {
+    describe_matches_cancellable(text, ranges, &Cancellation::default())
+}
+
+pub(crate) fn describe_matches_cancellable(text: &str, ranges: Vec<Range<usize>>, cancellation: &Cancellation) -> Vec<Match> {
+    let (mut offset, mut line, mut column) = (0, 1, 1);
+    let mut line_start = 0;
+    let mut line_end = text.find('\n').unwrap_or(text.len());
+    ranges
+        .into_iter()
+        .take_while(|_| !cancellation.is_canceled())
+        .map(|range| {
+            for (index, ch) in text[offset..range.start].char_indices() {
+                if ch == '\n' {
+                    line += 1;
+                    column = 1;
+                    line_start = offset + index + 1;
+                } else {
+                    column += 1;
+                }
+            }
+            if range.start > line_end {
+                line_end = text[range.start..].find('\n').map_or(text.len(), |offset| range.start + offset);
+            }
+            offset = range.start;
+            Match::at(text, range, line, column, line_start, line_end)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn search(text: &str, case_sensitive: bool, whole_word: bool) -> Search {
+        Search::new(&Query {
+            text: text.into(),
+            options: Options { case_sensitive, whole_word },
+        })
+        .unwrap()
+    }
+    #[test]
+    fn unicode_case_and_word_boundaries_preserve_byte_offsets() {
+        assert_eq!(search("é", false, true).find("É élan aé é"), vec![0..2, 13..15]);
+        assert_eq!(search("e", true, true).find("e e\u{301} _e e2"), vec![0..1]);
+        assert_eq!(search("猫", true, true).find("猫 子猫 猫"), vec![0..3, 11..14]);
+        assert_eq!(search(".", true, false).find("a.b"), vec![1..2]);
+    }
+    #[test]
+    fn empty_queries_and_zero_matches_have_no_navigation_target() {
+        assert!(search("", false, false).find("text").is_empty());
+        assert_eq!(navigate(&[], &(0..0), 0, false), None);
+        assert_eq!(navigate(&[], &(0..0), 0, true), None);
+        let found = search("one", true, false).find("one two one");
+        assert_eq!(navigate(&found, &(8..11), 11, false), Some(0));
+        assert_eq!(navigate(&found, &(0..3), 3, true), Some(1));
+    }
+    #[test]
+    fn replacement_containing_query_only_changes_original_matches() {
+        let original = "cat cat";
+        let edit = replacement_edit(original, &search("cat", true, false).find(original), "catcat").unwrap();
+        assert_eq!(edit.text, "catcat catcat");
+        assert_eq!(edit.count, 2);
+    }
+    #[test]
+    fn moved_matches_relocate_and_deleted_matches_are_rejected() {
+        let search = search("cat", true, false);
+        assert_eq!(relocate_match("one cat", "猫 one cat", &(4..7), &search), Some(8..11));
+        assert_eq!(relocate_match("one cat", "one dog", &(4..7), &search), None);
+    }
+}

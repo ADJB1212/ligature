@@ -43,6 +43,11 @@ pub struct Editor {
     preferred_x: Option<Pixels>,
     reveal_caret: bool,
     dragging: bool,
+    search_query: ligature_search::Query,
+    search_error: Option<String>,
+    search: Option<ligature_search::Search>,
+    search_matches: Vec<Range<usize>>,
+    search_revision: Option<(ligature_buffer::Revision, bool)>,
 }
 
 impl Editor {
@@ -60,6 +65,11 @@ impl Editor {
             preferred_x: None,
             reveal_caret: true,
             dragging: false,
+            search_query: ligature_search::Query::default(),
+            search_error: None,
+            search: None,
+            search_matches: Vec::new(),
+            search_revision: None,
         }
     }
 
@@ -76,6 +86,8 @@ impl Editor {
         self.scroll = point(px(0.0), px(0.0));
         self.preferred_x = None;
         self.reveal_caret = true;
+        self.search_revision = None;
+        self.refresh_search();
         cx.notify();
     }
 
@@ -83,8 +95,82 @@ impl Editor {
         let result = update(&mut self.state);
         self.preferred_x = None;
         self.reveal_caret = true;
+        self.refresh_search();
         cx.notify();
         result
+    }
+
+    pub fn set_search(&mut self, query: ligature_search::Query, cx: &mut Context<Self>) -> Result<(), String> {
+        if self.search_query == query {
+            return self.search_error.clone().map_or(Ok(()), Err);
+        }
+        match ligature_search::Search::new(&query) {
+            Ok(search) => {
+                self.search = Some(search);
+                self.search_error = None;
+            }
+            Err(error) => {
+                self.search = None;
+                self.search_error = Some(error);
+            }
+        }
+        self.search_query = query;
+        self.search_revision = None;
+        self.refresh_search();
+        cx.notify();
+        self.search_error.clone().map_or(Ok(()), Err)
+    }
+
+    fn refresh_search(&mut self) {
+        let revision = (self.state.buffer().revision(), self.state.marked_range().is_some());
+        if self.search_revision == Some(revision) && !revision.1 {
+            return;
+        }
+        self.search_matches = self.search.as_ref().map_or_else(Vec::new, |search| search.find(self.state.text()));
+        self.search_revision = Some(revision);
+    }
+
+    pub fn search_matches(&self) -> &[Range<usize>] {
+        &self.search_matches
+    }
+
+    pub fn search_status(&self) -> (Option<usize>, usize) {
+        let selection = self.state.selection();
+        (
+            self.search_matches
+                .binary_search_by_key(&selection.start, |range| range.start)
+                .ok()
+                .filter(|&index| self.search_matches[index] == selection),
+            self.search_matches.len(),
+        )
+    }
+
+    pub fn navigate_match(&mut self, backwards: bool, cx: &mut Context<Self>) {
+        self.state.commit_composition();
+        self.refresh_search();
+        if let Some(index) = ligature_search::navigate(&self.search_matches, &self.state.selection(), self.state.caret(), backwards) {
+            let range = self.search_matches[index].clone();
+            self.update_state(|state| state.select_search_match(range), cx);
+        }
+    }
+
+    pub fn replace_match(&mut self, replacement: &str, all: bool, cx: &mut Context<Self>) -> usize {
+        self.state.commit_composition();
+        self.refresh_search();
+        let matches = if all {
+            self.search_matches.clone()
+        } else {
+            self.search_status()
+                .0
+                .or_else(|| ligature_search::navigate(&self.search_matches, &self.state.selection(), self.state.caret(), false))
+                .map_or_else(Vec::new, |index| vec![self.search_matches[index].clone()])
+        };
+        let Some(edit) = ligature_search::replacement_edit(self.state.text(), &matches, replacement) else {
+            return 0;
+        };
+        let count = edit.count;
+        self.update_state(|state| state.replace(edit.range, &edit.text, false), cx);
+        count
     }
 
     pub fn set_font(&mut self, family: Option<SharedString>, font_size: Pixels, cx: &mut Context<Self>) {
@@ -99,6 +185,7 @@ impl Editor {
 
     fn changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.reveal_caret = true;
+        self.refresh_search();
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -491,6 +578,15 @@ impl Editor {
                 } else {
                     line.range.end
                 };
+                let first_match = self.search_matches.partition_point(|range| range.end <= line.range.start);
+                for matched in self.search_matches[first_match..].iter().take_while(|range| range.start < line_end) {
+                    let start = line.x_for_byte(matched.start.max(line.range.start));
+                    let end = line.x_for_byte(matched.end.min(line.range.end));
+                    window.paint_quad(fill(
+                        Bounds::new(point(origin.x + start, origin.y), size((end - start).max(px(1.0)), self.line_height)),
+                        colors.search_match,
+                    ));
+                }
                 if selection.start < line_end && selection.end > line.range.start {
                     let start = line.x_for_byte(selection.start.max(line.range.start));
                     let end = line.x_for_byte(selection.end.min(line.range.end)) + if selection.end > line.range.end { px(8.0) } else { px(0.0) };

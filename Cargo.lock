@@ -200,9 +200,9 @@ dependencies = [
 
 [[package]]
 name = "arbitrary"
-version = "1.4.2"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
+checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
 
 [[package]]
 name = "arg_enum_proc_macro"
@@ -3050,6 +3050,7 @@ version = "0.0.1"
 dependencies = [
  "gpui-ce",
  "ligature-buffer",
+ "ligature-search",
  "ligature-theme",
  "unicode-segmentation",
 ]
@@ -3085,6 +3086,13 @@ dependencies = [
 [[package]]
 name = "ligature-search"
 version = "0.0.1"
+dependencies = [
+ "ligature-buffer",
+ "ligature-fs",
+ "ligature-project",
+ "regex",
+ "tempfile",
+]
 
 [[package]]
 name = "ligature-settings"
@@ -3136,6 +3144,7 @@ dependencies = [
  "ligature-editor",
  "ligature-fs",
  "ligature-project",
+ "ligature-search",
  "ligature-settings",
  "ligature-theme",
  "ligature-ui",
@@ -7230,18 +7239,18 @@ checksum = "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"
 
 [[package]]
 name = "zerocopy"
-version = "0.8.60"
+version = "0.8.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6400fc4bb7426f6faac3fb07566122bb18622e3022bd2c36426a92ed489b1dbe"
+checksum = "879fb705ce98c32e41ebdb970fbe1204f8492423b314c6ab0354c3e7b5542866"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.60"
+version = "0.8.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99c27cc7525bad4df59a45e073c45b2c2aa820efb588234cc23a547ec69a34db"
+checksum = "708882a28301d604fa039cc7727607a98d04c4b86dc76ec9cc683f805d709759"
 dependencies = [
  "proc-macro2",
  "quote",

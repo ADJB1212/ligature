@@ -10,6 +10,12 @@ pub(super) enum Intent {
     New,
     Open,
     OpenPath(PathBuf),
+    OpenSearchResult {
+        path: PathBuf,
+        original: String,
+        range: std::ops::Range<usize>,
+        query: ligature_search::Query,
+    },
     OpenProject,
     SelectRoot,
     Restore,
@@ -105,6 +111,26 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
             this.update_in(cx, |workspace, window, cx| workspace.replace_document(None, window, cx))
                 .map_err(|err| err.to_string())?;
         }
+        Intent::OpenSearchResult {
+            path,
+            original,
+            range,
+            query,
+        } => {
+            open_path(this, cx, path).await?;
+            this.update_in(cx, |workspace, window, cx| {
+                let search = ligature_search::Search::new(&query)?;
+                let current = workspace.editor.read(cx).state().text();
+                let range = ligature_search::relocate_match(&original, current, &range, &search)
+                    .ok_or("This search result changed. Refresh the project search before opening it.")?;
+                workspace
+                    .editor
+                    .update(cx, |editor, cx| editor.update_state(|state| state.select_search_match(range), cx));
+                workspace.focus_editor(window, cx);
+                Ok::<_, String>(())
+            })
+            .map_err(|error| error.to_string())??;
+        }
         Intent::CloseTab(index) => {
             let original = this
                 .update_in(cx, |workspace, window, cx| {
@@ -149,6 +175,7 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
                 super::session::save_session(this, cx).await?;
                 this.update_in(cx, |workspace, window, cx| {
                     workspace.project_task = None;
+                    workspace.search.cancel();
                     while workspace.document.is_some() {
                         workspace.close_document(window, cx);
                     }
@@ -169,6 +196,28 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
         Intent::SelectRoot => super::project::select_root(this, cx).await?,
         Intent::Restore => super::session::restore(this, cx).await?,
     }
+    Ok(())
+}
+
+async fn open_path(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, path: PathBuf) -> Result<(), String> {
+    let path = cx
+        .background_executor()
+        .spawn(async move { ligature_fs::resolve(&path) })
+        .await
+        .map_err(|error| error.to_string())?;
+    if this
+        .update_in(cx, |workspace, window, cx| workspace.activate_path(&path, window, cx))
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(());
+    }
+    let loaded = cx
+        .background_executor()
+        .spawn(async move { ligature_fs::read(&path) })
+        .await
+        .map_err(|error| error.to_string())?;
+    this.update_in(cx, |workspace, window, cx| workspace.replace_document(Some(loaded), window, cx))
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 

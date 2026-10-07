@@ -18,6 +18,7 @@ ligature-buffer.workspace = true
 ligature-fs.workspace = true
 ligature-project.workspace = true
 ligature-settings.workspace = true
+ligature-search.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

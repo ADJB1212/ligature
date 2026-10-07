@@ -618,3 +618,294 @@ fn inactive_clean_files_reload_and_dirty_files_defer_the_external_change_prompt(
     cx.run_until_parked();
     assert_eq!(text(&cx, &root), "local external");
 }
+
+fn show_search(cx: &mut TestAppContext, window: WindowHandle<Workspace>, project: bool) {
+    cx.update_window(window.into(), |root, window, cx| {
+        root.downcast::<Workspace>()
+            .unwrap()
+            .update(cx, |workspace, cx| workspace.show_search(project, false, window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+fn search_query(cx: &mut TestAppContext, root: &Entity<Workspace>, query: &str) {
+    root.update(cx, |workspace, cx| {
+        workspace.search.input.update(cx, |input, cx| input.set_text(query, cx))
+    });
+    cx.run_until_parked();
+}
+
+fn finish_project_search(cx: &mut TestAppContext) {
+    cx.executor().advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+}
+
+fn open_project(cx: &mut TestAppContext, window: WindowHandle<Workspace>, path: &Path) {
+    start(cx, window, Intent::OpenProject);
+    cx.simulate_path_prompt_response(|_| Some(vec![path.to_owned()]));
+    cx.run_until_parked();
+}
+
+#[test]
+fn document_search_highlights_without_changing_selection_and_tracks_edits() {
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    type_text(&mut cx, &root, "cat Cat concatenate");
+    let selection = root.read_with(&cx, |workspace, cx| workspace.editor.read(cx).state().selection());
+    show_search(&mut cx, window, false);
+    search_query(&mut cx, &root, "cat");
+    root.read_with(&cx, |workspace, cx| {
+        assert_eq!(workspace.editor.read(cx).search_matches().len(), 3);
+        assert_eq!(workspace.editor.read(cx).state().selection(), selection);
+    });
+    root.update(&mut cx, |workspace, cx| {
+        workspace.search.query.options.whole_word = true;
+        workspace.search_options_changed(cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(root.read_with(&cx, |workspace, cx| workspace.editor.read(cx).search_matches().len()), 2);
+    type_text(&mut cx, &root, " cat");
+    cx.run_until_parked();
+    assert_eq!(root.read_with(&cx, |workspace, cx| workspace.editor.read(cx).search_matches().len()), 3);
+    cx.update_window(window.into(), |root, window, cx| {
+        root.downcast::<Workspace>()
+            .unwrap()
+            .update(cx, |workspace, cx| workspace.navigate_search(false, window, cx));
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    assert_eq!(
+        root.read_with(&cx, |workspace, cx| workspace.editor.read(cx).search_status()),
+        (Some(0), 3)
+    );
+    search_query(&mut cx, &root, "");
+    assert_eq!(root.read_with(&cx, |workspace, cx| workspace.editor.read(cx).search_status()), (None, 0));
+}
+
+#[test]
+fn find_shortcuts_focus_the_query_and_enter_navigates_without_editing_the_document() {
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    type_text(&mut cx, &root, "cat cat");
+    cx.update_window(window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    cx.simulate_keystrokes(window.into(), if cfg!(target_os = "macos") { "cmd-f" } else { "ctrl-f" });
+    cx.update_window(window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        assert!(root.read(cx).search.input.focus_handle(cx).is_focused(window));
+    })
+    .unwrap();
+    cx.simulate_input(window.into(), "cat");
+    cx.update_window(window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    cx.simulate_keystrokes(window.into(), "enter");
+    assert_eq!(text(&cx, &root), "cat cat");
+    assert_eq!(root.read_with(&cx, |workspace, cx| workspace.editor.read(cx).state().selection()), 0..3);
+    cx.simulate_keystrokes(window.into(), "shift-enter");
+    assert_eq!(root.read_with(&cx, |workspace, cx| workspace.editor.read(cx).state().selection()), 4..7);
+    cx.simulate_keystrokes(window.into(), "escape");
+    assert!(!root.read_with(&cx, |workspace, _| workspace.search.visible));
+    assert!(root.read_with(&cx, |workspace, cx| workspace.editor.read(cx).search_matches().is_empty()));
+}
+
+#[test]
+fn replace_all_is_one_undo_transaction_and_does_not_search_inserted_text() {
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    type_text(&mut cx, &root, "cat cat");
+    show_search(&mut cx, window, false);
+    search_query(&mut cx, &root, "cat");
+    root.update(&mut cx, |workspace, cx| {
+        workspace.search.replacement.update(cx, |input, cx| input.set_text("catcat", cx))
+    });
+    cx.run_until_parked();
+    cx.update_window(window.into(), |root, window, cx| {
+        root.downcast::<Workspace>()
+            .unwrap()
+            .update(cx, |workspace, cx| workspace.replace_document_matches(true, window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(text(&cx, &root), "catcat catcat");
+    assert_eq!(root.read_with(&cx, |workspace, cx| workspace.editor.read(cx).search_matches().len()), 4);
+    root.update(&mut cx, |workspace, cx| {
+        workspace.editor.update(cx, |editor, cx| editor.update_state(|state| state.undo(), cx))
+    });
+    assert_eq!(text(&cx, &root), "cat cat");
+}
+
+#[test]
+fn search_navigation_selects_partial_grapheme_matches_and_wraps() {
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    type_text(&mut cx, &root, "e\u{301} e");
+    show_search(&mut cx, window, false);
+    search_query(&mut cx, &root, "e");
+    for expected in [0..1, 4..5, 0..1] {
+        cx.update_window(window.into(), |root, window, cx| {
+            root.downcast::<Workspace>()
+                .unwrap()
+                .update(cx, |workspace, cx| workspace.navigate_search(false, window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            root.read_with(&cx, |workspace, cx| workspace.editor.read(cx).state().selection()),
+            expected
+        );
+    }
+}
+
+#[test]
+fn changing_project_queries_cancels_obsolete_results_and_searches_dirty_tabs() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("main.tex");
+    fs::write(&path, "disk cat").unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    open_project(&mut cx, window, dir.path());
+    open(&mut cx, window, &path);
+    type_text(&mut cx, &root, "unsaved dog ");
+    start(&mut cx, window, Intent::New);
+    show_search(&mut cx, window, true);
+    search_query(&mut cx, &root, "cat");
+    assert!(root.read_with(&cx, |workspace, _| workspace.search.running));
+    search_query(&mut cx, &root, "dog");
+    finish_project_search(&mut cx);
+    root.read_with(&cx, |workspace, _| {
+        assert_eq!(workspace.search.results.query.text, "dog");
+        assert_eq!(workspace.search.results.count(), 1);
+        assert!(workspace.search.results.files[0].source.buffer.is_some());
+        assert_eq!(workspace.search.results.files[0].matches[0].excerpt, "unsaved dog disk cat");
+    });
+    search_query(&mut cx, &root, "");
+    assert_eq!(root.read_with(&cx, |workspace, _| workspace.search.results.count()), 0);
+    assert!(!root.read_with(&cx, |workspace, _| workspace.search.running));
+}
+
+#[test]
+fn project_results_open_at_positions_after_unrelated_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("main.tex");
+    fs::write(&path, "before cat after").unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    open_project(&mut cx, window, dir.path());
+    show_search(&mut cx, window, true);
+    search_query(&mut cx, &root, "cat");
+    finish_project_search(&mut cx);
+    let file = root.read_with(&cx, |workspace, _| workspace.search.results.files[0].clone());
+    fs::write(&path, "猫\nbefore cat after").unwrap();
+    start(
+        &mut cx,
+        window,
+        Intent::OpenSearchResult {
+            path: file.path,
+            original: file.source.text,
+            range: file.matches[0].range.clone(),
+            query: ligature_search::Query {
+                text: "cat".into(),
+                ..Default::default()
+            },
+        },
+    );
+    root.read_with(&cx, |workspace, cx| {
+        assert_eq!(workspace.editor.read(cx).state().selected_text(), "cat");
+        assert_eq!(workspace.editor.read(cx).state().selection(), 11..14);
+        assert!(workspace.error.is_none());
+    });
+}
+
+#[test]
+fn project_replacement_preview_reports_changed_files_and_edits_open_buffers_with_undo() {
+    let dir = tempfile::tempdir().unwrap();
+    let opened = dir.path().join("opened.tex");
+    let changed = dir.path().join("changed.tex");
+    let closed = dir.path().join("closed.tex");
+    for path in [&opened, &changed, &closed] {
+        fs::write(path, "cat cat").unwrap();
+    }
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    open_project(&mut cx, window, dir.path());
+    open(&mut cx, window, &opened);
+    type_text(&mut cx, &root, "local ");
+    show_search(&mut cx, window, true);
+    search_query(&mut cx, &root, "cat");
+    finish_project_search(&mut cx);
+    root.update(&mut cx, |workspace, cx| {
+        workspace.search.replacement.update(cx, |input, cx| input.set_text("dog", cx))
+    });
+    cx.run_until_parked();
+    root.update(&mut cx, |workspace, cx| workspace.preview_project_replacements(cx));
+    cx.run_until_parked();
+    assert_eq!(text(&cx, &root), "local cat cat");
+    assert_eq!(fs::read_to_string(&closed).unwrap(), "cat cat");
+    cx.update_window(window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    fs::write(&changed, "external edit").unwrap();
+    cx.update_window(window.into(), |root, window, cx| {
+        root.downcast::<Workspace>()
+            .unwrap()
+            .update(cx, |workspace, cx| workspace.apply_project_preview(window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(text(&cx, &root), "local dog dog");
+    assert_eq!(fs::read_to_string(&opened).unwrap(), "cat cat");
+    assert_eq!(fs::read_to_string(&closed).unwrap(), "dog dog");
+    assert_eq!(fs::read_to_string(&changed).unwrap(), "external edit");
+    root.read_with(&cx, |workspace, cx| {
+        assert!(workspace.editor.read(cx).state().is_dirty());
+        let report = workspace.search.report.as_ref().unwrap();
+        assert_eq!(report.applied, 2);
+        assert_eq!(report.failures.len(), 1);
+        assert!(report.failures.keys().next().unwrap().ends_with("changed.tex"));
+    });
+    root.update(&mut cx, |workspace, cx| {
+        workspace.editor.update(cx, |editor, cx| editor.update_state(|state| state.undo(), cx))
+    });
+    assert_eq!(text(&cx, &root), "local cat cat");
+}
+
+#[test]
+fn project_replacement_rejects_buffers_edited_after_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("main.tex");
+    fs::write(&path, "cat").unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    open_project(&mut cx, window, dir.path());
+    open(&mut cx, window, &path);
+    show_search(&mut cx, window, true);
+    search_query(&mut cx, &root, "cat");
+    finish_project_search(&mut cx);
+    root.update(&mut cx, |workspace, cx| {
+        workspace.search.replacement.update(cx, |input, cx| input.set_text("dog", cx))
+    });
+    cx.run_until_parked();
+    root.update(&mut cx, |workspace, cx| workspace.preview_project_replacements(cx));
+    cx.run_until_parked();
+    type_text(&mut cx, &root, "local ");
+    cx.run_until_parked();
+    assert!(root.read_with(&cx, |workspace, _| workspace.search.preview_stale));
+    cx.update_window(window.into(), |root, window, cx| {
+        root.downcast::<Workspace>()
+            .unwrap()
+            .update(cx, |workspace, cx| workspace.apply_project_preview(window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(text(&cx, &root), "local cat");
+    assert_eq!(
+        root.read_with(&cx, |workspace, _| workspace.search.report.as_ref().unwrap().failures.len()),
+        1
+    );
+}

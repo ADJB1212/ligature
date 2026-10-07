@@ -58,6 +58,8 @@ pub(super) async fn load_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWin
         workspace.update_membership();
         workspace.settings_errors = errors;
         workspace.start_project_refresh(window, cx);
+        workspace.search.preview = None;
+        workspace.queue_project_search(cx);
         cx.notify();
     })
     .map_err(|error| error.to_string())?;
@@ -184,6 +186,8 @@ impl Workspace {
                         if workspace.settings != settings {
                             workspace.settings = settings;
                             workspace.apply_settings(cx);
+                            workspace.search.preview = None;
+                            workspace.queue_project_search(cx);
                         }
                         if let Some(project) = &mut workspace.project {
                             project.root_document.clone_from(&workspace.settings.root_document);

@@ -17,6 +17,7 @@ pub struct Colors {
     pub error: Hsla,
     pub error_surface: Hsla,
     pub selection: Hsla,
+    pub search_match: Hsla,
 }
 
 pub fn colors() -> Colors {
@@ -35,6 +36,7 @@ pub fn colors() -> Colors {
         error: rgb_to_hsla(rgb(0xe8a49c)),
         error_surface: rgb_to_hsla(rgb(0x3a2e32)),
         selection: rgb_to_hsla(rgb(0xdce3ea)).opacity(0.22),
+        search_match: rgb_to_hsla(rgb(0xdce3ea)).opacity(0.12),
     }
 }
 

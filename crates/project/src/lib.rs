@@ -73,9 +73,7 @@ pub fn directory(path: &Path, output_directory: &Path) -> Directory {
         Ok(mut entries) => {
             entries.retain(|entry| {
                 let name = entry.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
-                !matches!(name, ".git" | "target" | "build" | "out" | ".latexmk" | ".ligature.json")
-                    && entry.path != output_directory
-                    && !name.starts_with(".ligature-")
+                !excluded_name(name) && entry.path != output_directory
             });
             Directory { entries, error: None }
         }
@@ -84,6 +82,66 @@ pub fn directory(path: &Path, output_directory: &Path) -> Directory {
             error: Some(error.to_string()),
         },
     }
+}
+
+fn excluded_name(name: &str) -> bool {
+    matches!(name, ".git" | "target" | "build" | "out" | ".latexmk" | ".ligature.json") || name.starts_with(".ligature-")
+}
+
+pub fn eligible_search_path(root: &Path, path: &Path, output_directory: &Path) -> bool {
+    searchable(path)
+        && !path.starts_with(output_directory)
+        && path
+            .strip_prefix(root)
+            .is_ok_and(|path| path.components().all(|part| !excluded_name(part.as_os_str().to_str().unwrap_or(""))))
+}
+
+#[derive(Debug, Default)]
+pub struct SearchFiles {
+    pub paths: BTreeSet<PathBuf>,
+    pub errors: BTreeMap<PathBuf, String>,
+}
+
+pub fn search_files(root: &Path, output_directory: &Path, canceled: impl Fn() -> bool) -> SearchFiles {
+    let mut files = SearchFiles::default();
+    let mut pending = vec![root.to_owned()];
+    while let Some(path) = pending.pop() {
+        if canceled() {
+            break;
+        }
+        let entries = directory(&path, output_directory);
+        if let Some(error) = entries.error {
+            files.errors.insert(path, error);
+        }
+        for entry in entries.entries {
+            if canceled() {
+                return files;
+            }
+            if entry.is_directory {
+                pending.push(entry.path);
+            } else if searchable(&entry.path) {
+                match std::fs::canonicalize(&entry.path) {
+                    Ok(path) if eligible_search_path(root, &path, output_directory) => {
+                        files.paths.insert(path);
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        files.errors.insert(entry.path, error.to_string());
+                    }
+                }
+            }
+        }
+    }
+    files
+}
+
+pub fn searchable(path: &Path) -> bool {
+    path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| {
+        matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "tex" | "bib" | "sty" | "cls" | "bst" | "ltx" | "dtx" | "ins" | "txt" | "cfg" | "def" | "tikz"
+        )
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

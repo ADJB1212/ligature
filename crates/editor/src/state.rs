@@ -111,6 +111,17 @@ impl EditorState {
         self.anchor.min(self.caret)..self.anchor.max(self.caret)
     }
 
+    pub fn select_search_match(&mut self, range: Range<usize>) {
+        self.commit_composition();
+        self.buffer
+            .text_range(ByteOffset(range.start), ByteOffset(range.end))
+            .expect("valid search range");
+        self.buffer.end_typing_group();
+        self.anchor = range.start;
+        self.caret = range.end;
+        self.preferred_column = None;
+    }
+
     pub fn selected_text(&self) -> &str {
         &self.text()[self.selection()]
     }

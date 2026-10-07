@@ -2,6 +2,7 @@
 
 mod lifecycle;
 mod project;
+mod search;
 mod session;
 
 #[cfg(test)]
@@ -23,7 +24,24 @@ use lifecycle::Intent;
 
 actions!(
     ligature_workspace,
-    [New, Open, OpenProject, Save, SaveAs, Close, Quit, NextTab, PreviousTab, SelectRoot]
+    [
+        New,
+        Open,
+        OpenProject,
+        Save,
+        SaveAs,
+        Close,
+        Quit,
+        NextTab,
+        PreviousTab,
+        SelectRoot,
+        Find,
+        FindNext,
+        FindPrevious,
+        Replace,
+        FindInProject,
+        HideSearch
+    ]
 );
 
 pub fn init(cx: &mut App) {
@@ -38,6 +56,16 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(&format!("{modifier}-shift-o"), OpenProject, Some("LigatureWorkspace")),
         KeyBinding::new("ctrl-tab", NextTab, Some("LigatureWorkspace")),
         KeyBinding::new("ctrl-shift-tab", PreviousTab, Some("LigatureWorkspace")),
+        KeyBinding::new(&format!("{modifier}-f"), Find, Some("LigatureWorkspace")),
+        KeyBinding::new(&format!("{modifier}-alt-f"), Replace, Some("LigatureWorkspace")),
+        KeyBinding::new(&format!("{modifier}-shift-f"), FindInProject, Some("LigatureWorkspace")),
+        KeyBinding::new(&format!("{modifier}-g"), FindNext, Some("LigatureWorkspace")),
+        KeyBinding::new(&format!("{modifier}-shift-g"), FindPrevious, Some("LigatureWorkspace")),
+        KeyBinding::new("f3", FindNext, Some("LigatureWorkspace")),
+        KeyBinding::new("shift-f3", FindPrevious, Some("LigatureWorkspace")),
+        KeyBinding::new("enter", FindNext, Some("LigatureSearch")),
+        KeyBinding::new("shift-enter", FindPrevious, Some("LigatureSearch")),
+        KeyBinding::new("escape", HideSearch, Some("LigatureSearch")),
     ]);
 }
 
@@ -85,6 +113,7 @@ pub struct Workspace {
     includes: ligature_project::IncludeGraph,
     project_task: Option<Task<()>>,
     session_path: Option<PathBuf>,
+    search: search::SearchUi,
 }
 
 struct Tab {
@@ -101,7 +130,8 @@ impl Workspace {
         window.focus(&editor.focus_handle(cx), cx);
         let preview = cx.new(|_| PreviewPlaceholder);
         let panes = cx.new(|_| SplitPane::new(editor.clone().into(), preview.into()));
-        let subscription = cx.observe(&editor, |_, _, cx| cx.notify());
+        let subscription = cx.observe(&editor, |workspace, _, cx| workspace.editor_changed(cx));
+        let search = search::SearchUi::new(cx);
         let entity = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
             entity.update(cx, |workspace, cx| workspace.start(Intent::CloseWindow, window, cx)).ok();
@@ -128,6 +158,7 @@ impl Workspace {
             includes: ligature_project::IncludeGraph::default(),
             project_task: None,
             session_path: None,
+            search,
         }
     }
 
@@ -180,13 +211,14 @@ impl Workspace {
         };
         self.document = Some(document);
         self.editor = cx.new(|cx| Editor::new(Buffer::from_text(text), cx));
-        self._editor_subscription = cx.observe(&self.editor, |_, _, cx| cx.notify());
+        self._editor_subscription = cx.observe(&self.editor, |workspace, _, cx| workspace.editor_changed(cx));
         self.configure_active_editor(cx);
         let editor = self.editor.clone().into();
         self.panes.update(cx, |panes, cx| panes.set_leading(editor, cx));
         self.start_watching(window, cx);
         self.focus_editor(window, cx);
         self.update_membership();
+        self.editor_changed(cx);
     }
 
     fn close_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -205,6 +237,7 @@ impl Workspace {
         let empty = cx.new(|_| EmptyEditor);
         self.panes.update(cx, |panes, cx| panes.set_leading(empty.into(), cx));
         self.update_membership();
+        self.search_sources_changed(cx);
     }
 
     fn park_active(&mut self) {
@@ -227,10 +260,11 @@ impl Workspace {
         self.watcher = tab.watcher;
         self.watch_task = tab.watch_task;
         self.external_pending = tab.external_pending;
-        self._editor_subscription = cx.observe(&self.editor, |_, _, cx| cx.notify());
+        self._editor_subscription = cx.observe(&self.editor, |workspace, _, cx| workspace.editor_changed(cx));
         let editor = self.editor.clone().into();
         self.panes.update(cx, |panes, cx| panes.set_leading(editor, cx));
         self.focus_editor(window, cx);
+        self.editor_changed(cx);
         cx.notify();
     }
 
@@ -341,6 +375,7 @@ impl Workspace {
         } else {
             tab.external_pending = true;
         }
+        self.search_sources_changed(cx);
         cx.notify();
     }
 }
@@ -381,9 +416,22 @@ impl Render for Workspace {
                     .on_action(cx.listener(|this, _: &Close, window, cx| this.start(Intent::Close, window, cx)))
             })
             .on_action(cx.listener(|this, _: &Quit, window, cx| this.request_quit(window, cx)))
+            .when(!unavailable, |view| {
+                view.on_action(cx.listener(|this, _: &Find, window, cx| this.show_search(false, false, window, cx)))
+                    .on_action(cx.listener(|this, _: &Replace, window, cx| this.show_search(false, true, window, cx)))
+            })
+            .when(self.project.is_some(), |view| {
+                view.on_action(cx.listener(|this, _: &FindInProject, window, cx| this.show_search(true, false, window, cx)))
+            })
+            .when(self.search.visible, |view| {
+                view.on_action(cx.listener(|this, _: &HideSearch, window, cx| this.hide_search(window, cx)))
+                    .on_action(cx.listener(|this, _: &FindNext, window, cx| this.navigate_search(false, window, cx)))
+                    .on_action(cx.listener(|this, _: &FindPrevious, window, cx| this.navigate_search(true, window, cx)))
+            })
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap(spacing::small())
                     .p(spacing::medium())
@@ -423,10 +471,16 @@ impl Render for Workspace {
                             .disabled(unavailable)
                             .on_click(cx.listener(|this, _, window, cx| this.start(Intent::Close, window, cx))),
                     )
+                    .child(
+                        Button::new("find", "Find")
+                            .disabled(unavailable)
+                            .on_click(cx.listener(|this, _, window, cx| this.show_search(false, false, window, cx))),
+                    )
                     .child(div().ml(spacing::medium()).child(name).when(dirty, |view| view.child(" *"))),
             )
             .when_some(self.error.clone(), |view, error| view.child(inline_error(error)))
             .children(self.settings_errors.iter().map(|error| inline_error(error.clone())))
+            .when(self.search.visible, |view| view.child(self.render_search(cx)))
             .child(
                 div()
                     .id("tabs")
