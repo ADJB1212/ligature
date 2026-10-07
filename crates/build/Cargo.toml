@@ -7,7 +7,15 @@ rust-version.workspace = true
 repository.workspace = true
 license.workspace = true
 publish = false
-description = "TeX build scheduling, process execution, cancellation, output artifacts, and log parsing"
+description = "Bundled TeX process execution and validated build requests"
+
+[dependencies]
+ligature-project.workspace = true
+ligature-settings.workspace = true
+ligature-toolchain.workspace = true
+
+[dev-dependencies]
+tempfile = { version = "3", default-features = false, features = [] }
 
 [lints]
 workspace = true

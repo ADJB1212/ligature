@@ -3031,6 +3031,12 @@ version = "0.0.1"
 [[package]]
 name = "ligature-build"
 version = "0.0.1"
+dependencies = [
+ "ligature-project",
+ "ligature-settings",
+ "ligature-toolchain",
+ "tempfile",
+]
 
 [[package]]
 name = "ligature-completion"
@@ -3126,6 +3132,9 @@ dependencies = [
 [[package]]
 name = "ligature-toolchain"
 version = "0.0.1"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "ligature-ui"

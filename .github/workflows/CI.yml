@@ -15,6 +15,9 @@ env:
   RUSTUP_TERM_PROGRESS_WHEN: "never"
   RUST_BACKTRACE: "1"
   DO_NOT_TRACK: "1"
+  TECTONIC_DEP_BACKEND: "pkg-config"
+  CFLAGS: "-std=gnu17"
+  CXXFLAGS: "-std=c++17"
 
 permissions:
   contents: read
@@ -29,6 +32,11 @@ jobs:
 
       - name: Install Rust toolchain
         run: rustup show
+
+      - name: Install bundled engine build dependencies
+        run: |
+          brew install pkgconf freetype graphite2 icu4c libpng
+          echo "PKG_CONFIG_PATH=$(brew --prefix icu4c)/lib/pkgconfig" >> "$GITHUB_ENV"
 
       - name: Check formatting
         run: cargo fmt --all --check

@@ -40,19 +40,92 @@ impl Default for IndentationSettings {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SaveBeforeBuild {
+    #[default]
+    SaveAll,
+    RequireClean,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(from = "BuildSettingsInput")]
 pub struct BuildSettings {
-    pub program: String,
-    pub arguments: Vec<String>,
     pub output_directory: PathBuf,
+    pub synctex: bool,
+    pub keep_logs: bool,
+    pub keep_intermediates: bool,
+    pub reruns: Option<usize>,
+    pub save_before_build: SaveBeforeBuild,
 }
 impl Default for BuildSettings {
     fn default() -> Self {
         Self {
-            program: "latexmk".into(),
-            arguments: vec!["-pdf".into(), "-synctex=1".into(), "-interaction=nonstopmode".into()],
             output_directory: "build".into(),
+            synctex: true,
+            keep_logs: true,
+            keep_intermediates: false,
+            reruns: None,
+            save_before_build: SaveBeforeBuild::SaveAll,
+        }
+    }
+}
+
+impl BuildSettings {
+    pub fn validate(&mut self) -> Vec<String> {
+        let mut errors = Vec::new();
+        if self.reruns.is_some_and(|reruns| reruns > 10) {
+            errors.push("build.reruns must be at most 10; using automatic reruns".into());
+            self.reruns = None;
+        }
+        if !relative_path(&self.output_directory) {
+            errors.push("build.output_directory must be within the project; using build".into());
+            self.output_directory = "build".into();
+        }
+        errors
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct BuildSettingsInput {
+    output_directory: PathBuf,
+    synctex: bool,
+    keep_logs: bool,
+    keep_intermediates: bool,
+    reruns: Option<usize>,
+    save_before_build: SaveBeforeBuild,
+    program: Option<serde_json::Value>,
+    arguments: Option<serde_json::Value>,
+    engine: Option<serde_json::Value>,
+    executable_path: Option<serde_json::Value>,
+}
+impl Default for BuildSettingsInput {
+    fn default() -> Self {
+        let defaults = BuildSettings::default();
+        Self {
+            output_directory: defaults.output_directory,
+            synctex: defaults.synctex,
+            keep_logs: defaults.keep_logs,
+            keep_intermediates: defaults.keep_intermediates,
+            reruns: defaults.reruns,
+            save_before_build: defaults.save_before_build,
+            program: None,
+            arguments: None,
+            engine: None,
+            executable_path: None,
+        }
+    }
+}
+impl From<BuildSettingsInput> for BuildSettings {
+    fn from(input: BuildSettingsInput) -> Self {
+        Self {
+            output_directory: input.output_directory,
+            synctex: input.synctex,
+            keep_logs: input.keep_logs,
+            keep_intermediates: input.keep_intermediates,
+            reruns: input.reruns,
+            save_before_build: input.save_before_build,
         }
     }
 }
@@ -80,14 +153,7 @@ impl Settings {
             errors.push("indentation.width must be between 1 and 16; using 4".into());
             self.indentation.width = 4;
         }
-        if self.build.program.trim().is_empty() {
-            errors.push("build.program must not be empty; using latexmk".into());
-            self.build.program = "latexmk".into();
-        }
-        if !relative_path(&self.build.output_directory) {
-            errors.push("build.output_directory must be within the project; using build".into());
-            self.build.output_directory = "build".into();
-        }
+        errors.extend(self.build.validate());
         if self.root_document.as_ref().is_some_and(|path| !relative_path(path)) {
             errors.push("root_document must be within the project; ignoring it".into());
             self.root_document = None;
@@ -168,7 +234,7 @@ mod tests {
     fn overrides_merge_with_defaults_and_invalid_values_fall_back() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(PROJECT_FILE);
-        std::fs::write(&path, r#"{"font":{"size":20},"indentation":{"width":0},"build":{"program":""}}"#).unwrap();
+        std::fs::write(&path, r#"{"font":{"size":20},"indentation":{"width":0},"build":{"reruns":11}}"#).unwrap();
         let (settings, errors) = Settings::load(&path);
         assert_eq!(settings.font.size, 20.0);
         assert_eq!(settings.indentation.width, 4);
@@ -196,5 +262,26 @@ mod tests {
         let path = directory.path().join("config/session.json");
         session.save(&path).unwrap();
         assert_eq!(Session::load(&path).unwrap(), session);
+    }
+
+    #[test]
+    fn legacy_engine_settings_migrate_without_losing_project_overrides() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"font":{"size":21},"root_document":"main.tex","build":{"program":"/usr/bin/latexmk","arguments":["-pdf"],"engine":"xelatex","executable_path":"/custom/tex","output_directory":"output files"}}"#,
+        ).unwrap();
+        assert_eq!(settings.font.size, 21.0);
+        assert_eq!(settings.root_document, Some("main.tex".into()));
+        assert_eq!(settings.build.output_directory, PathBuf::from("output files"));
+        assert!(settings.build.synctex && settings.build.keep_logs);
+        let serialized = serde_json::to_string(&settings).unwrap();
+        for legacy in ["program", "arguments", "engine", "executable_path"] {
+            assert!(!serialized.contains(legacy));
+        }
+        assert_eq!(serde_json::from_str::<Settings>(&serialized).unwrap(), settings);
+    }
+
+    #[test]
+    fn unknown_build_options_are_rejected() {
+        assert!(serde_json::from_str::<Settings>(r#"{"build":{"synctx":false}}"#).is_err());
     }
 }

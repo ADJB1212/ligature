@@ -1,1 +1,410 @@
-//! TeX build scheduling, process execution, cancellation, output artifacts, and log parsing.
+//! Validated disk-based build requests and bundled Tectonic processes.
+
+use ligature_project::Project;
+use ligature_settings::{BuildSettings, SaveBeforeBuild};
+use ligature_toolchain::BundledResources;
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+    process::{Command, Output, Stdio},
+};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionOptions {
+    pub synctex: bool,
+    pub keep_logs: bool,
+    pub keep_intermediates: bool,
+    pub reruns: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BuildRequest {
+    project_root: PathBuf,
+    root_document: PathBuf,
+    output_directory: PathBuf,
+    options: SessionOptions,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BuildPreparation {
+    SaveRequired(Vec<PathBuf>),
+    Ready(BuildRequest),
+}
+
+impl BuildRequest {
+    /// Save every returned document, then prepare again with current dirty paths.
+    /// Failed or canceled saves must not launch a session.
+    pub fn prepare(project: &Project, settings: &BuildSettings, dirty_documents: &[PathBuf]) -> Result<BuildPreparation, String> {
+        let mut validated = settings.clone();
+        let errors = validated.validate();
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+        let project = validated_project(project)?;
+        let root_document = project.root.join(project.root_document.as_ref().unwrap());
+        if root_document.file_name().and_then(|name| name.to_str()).is_none() {
+            return Err("The root document filename must be UTF-8".into());
+        }
+        let output_directory = project.root.join(&settings.output_directory);
+        validate_output(&project.root, &output_directory)?;
+        let dirty: BTreeSet<_> = dirty_documents
+            .iter()
+            .filter_map(|path| project.relative(path).map(|relative| project.root.join(relative)))
+            .collect();
+        if !dirty.is_empty() {
+            return match settings.save_before_build {
+                SaveBeforeBuild::SaveAll => Ok(BuildPreparation::SaveRequired(dirty.into_iter().collect())),
+                SaveBeforeBuild::RequireClean => Err("Save dirty project documents before building".into()),
+            };
+        }
+        Ok(BuildPreparation::Ready(Self {
+            project_root: project.root,
+            root_document,
+            output_directory,
+            options: SessionOptions {
+                synctex: settings.synctex,
+                keep_logs: settings.keep_logs,
+                keep_intermediates: settings.keep_intermediates,
+                reruns: settings.reruns,
+            },
+        }))
+    }
+
+    pub fn root_document(&self) -> &Path {
+        &self.root_document
+    }
+    pub fn filesystem_root(&self) -> &Path {
+        self.root_document.parent().unwrap()
+    }
+    pub fn output_directory(&self) -> &Path {
+        &self.output_directory
+    }
+    pub fn options(&self) -> &SessionOptions {
+        &self.options
+    }
+
+    /// Prepare a bundled engine command for execution on a background worker.
+    pub fn create_session(&self, resources: &BundledResources) -> Result<BuildSession, String> {
+        let mut project = Project::open(&self.project_root)?;
+        project.set_root_document(&self.root_document)?;
+        validate_output(&project.root, &self.output_directory)?;
+        std::fs::create_dir_all(&self.output_directory).map_err(|error| format!("Could not create build output directory: {error}"))?;
+        if !resources.executable.is_absolute() || !resources.bundle.is_absolute() || !resources.format_cache.is_absolute() {
+            return Err("Executable, bundle, and format-cache paths must be absolute".into());
+        }
+        if !resources.executable.is_file() {
+            return Err(format!("Missing bundled Tectonic executable '{}'", resources.executable.display()));
+        }
+        if !resources.bundle.is_file() {
+            return Err(format!("Missing bundled TeX resources '{}'", resources.bundle.display()));
+        }
+        std::fs::create_dir_all(&resources.format_cache).map_err(|error| format!("Could not create format cache: {error}"))?;
+        Ok(BuildSession {
+            command: self.command(resources),
+        })
+    }
+
+    fn command(&self, resources: &BundledResources) -> Command {
+        let mut command = Command::new(&resources.executable);
+        command
+            .current_dir(self.filesystem_root())
+            .env("TECTONIC_CACHE_DIR", &resources.format_cache)
+            .stdin(Stdio::null())
+            .args(["--color", "never", "--untrusted", "--only-cached", "--outfmt", "pdf", "--bundle"])
+            .arg(&resources.bundle)
+            .arg("--outdir")
+            .arg(&self.output_directory);
+        if self.options.synctex {
+            command.arg("--synctex");
+        }
+        if self.options.keep_logs {
+            command.arg("--keep-logs");
+        }
+        if self.options.keep_intermediates {
+            command.arg("--keep-intermediates");
+        }
+        if let Some(reruns) = self.options.reruns {
+            command.arg("--reruns").arg(reruns.to_string());
+        }
+        command.arg("--").arg(&self.root_document);
+        command
+    }
+}
+
+pub struct BuildSession {
+    command: Command,
+}
+
+impl BuildSession {
+    pub fn run(&mut self) -> Result<Output, String> {
+        let output = self
+            .command
+            .output()
+            .map_err(|error| format!("Could not launch bundled Tectonic: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "Typesetting failed ({}):\n{}{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(output)
+    }
+}
+
+fn validated_project(project: &Project) -> Result<Project, String> {
+    let root = project.root_document.as_ref().ok_or("Select a root TeX document before building")?;
+    let mut validated = Project::open(&project.root)?;
+    validated.set_root_document(root)?;
+    Ok(validated)
+}
+
+fn validate_output(project_root: &Path, output: &Path) -> Result<(), String> {
+    let mut ancestor = output;
+    while !ancestor.try_exists().map_err(|error| error.to_string())? {
+        ancestor = ancestor.parent().ok_or("Invalid build output directory")?;
+    }
+    let resolved = std::fs::canonicalize(ancestor).map_err(|error| error.to_string())?;
+    if !resolved.starts_with(project_root) || !resolved.is_dir() {
+        return Err("The build output directory must be a directory within the project".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project(directory: &Path) -> Project {
+        std::fs::create_dir_all(directory.join("chapter one")).unwrap();
+        std::fs::write(directory.join("chapter one/main α.tex"), "\\bye").unwrap();
+        let mut project = Project::open(directory).unwrap();
+        project.set_root_document(Path::new("chapter one/main α.tex")).unwrap();
+        project
+    }
+
+    fn ready(project: &Project, settings: &BuildSettings) -> BuildRequest {
+        let BuildPreparation::Ready(request) = BuildRequest::prepare(project, settings, &[]).unwrap() else {
+            panic!("expected ready request")
+        };
+        request
+    }
+
+    #[test]
+    fn request_resolves_unicode_and_spaced_paths_without_changing_working_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let cwd = std::env::current_dir().unwrap();
+        let settings = BuildSettings {
+            output_directory: "output α/files".into(),
+            ..BuildSettings::default()
+        };
+        let request = ready(&project, &settings);
+        assert_eq!(request.root_document(), project.root.join("chapter one/main α.tex"));
+        assert_eq!(request.filesystem_root(), project.root.join("chapter one"));
+        assert_eq!(request.output_directory(), project.root.join("output α/files"));
+        assert!(request.options().synctex && request.options().keep_logs);
+        assert_eq!(std::env::current_dir().unwrap(), cwd);
+        assert!(!request.output_directory().exists());
+    }
+
+    #[test]
+    fn missing_deleted_and_non_tex_roots_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut project = project(directory.path());
+        std::fs::remove_file(project.root.join(project.root_document.as_ref().unwrap())).unwrap();
+        assert!(BuildRequest::prepare(&project, &BuildSettings::default(), &[]).is_err());
+        std::fs::write(project.root.join("notes.txt"), "text").unwrap();
+        project.root_document = Some("notes.txt".into());
+        assert!(BuildRequest::prepare(&project, &BuildSettings::default(), &[]).is_err());
+        project.root_document = None;
+        assert!(BuildRequest::prepare(&project, &BuildSettings::default(), &[]).is_err());
+    }
+
+    #[test]
+    fn all_dirty_project_documents_must_be_saved_before_a_request_is_ready() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let dirty = vec![
+            PathBuf::from("references.bib"),
+            PathBuf::from("chapter one/main α.tex"),
+            PathBuf::from("references.bib"),
+            directory.path().parent().unwrap().join("other.tex"),
+        ];
+        let BuildPreparation::SaveRequired(paths) = BuildRequest::prepare(&project, &BuildSettings::default(), &dirty).unwrap() else {
+            panic!("expected saves")
+        };
+        assert_eq!(
+            paths,
+            vec![project.root.join("chapter one/main α.tex"), project.root.join("references.bib")]
+        );
+        let settings = BuildSettings {
+            save_before_build: SaveBeforeBuild::RequireClean,
+            ..BuildSettings::default()
+        };
+        assert!(BuildRequest::prepare(&project, &settings, &dirty).is_err());
+        assert!(matches!(BuildRequest::prepare(&project, &settings, &[]), Ok(BuildPreparation::Ready(_))));
+    }
+
+    #[test]
+    fn invalid_output_and_session_options_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        for output in ["../outside", ""] {
+            let settings = BuildSettings {
+                output_directory: output.into(),
+                ..BuildSettings::default()
+            };
+            assert!(BuildRequest::prepare(&project, &settings, &[]).is_err());
+        }
+        let settings = BuildSettings {
+            reruns: Some(11),
+            ..BuildSettings::default()
+        };
+        assert!(BuildRequest::prepare(&project, &settings, &[]).is_err());
+    }
+
+    #[cfg(unix)]
+    fn resources(project: &Project, script: &str) -> BundledResources {
+        use std::os::unix::fs::PermissionsExt;
+
+        let resources = BundledResources::new(&project.root.join("resources α"), &project.root.join("cache α")).unwrap();
+        std::fs::create_dir_all(resources.executable.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(resources.bundle.parent().unwrap()).unwrap();
+        std::fs::write(&resources.executable, script).unwrap();
+        std::fs::set_permissions(&resources.executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(&resources.bundle, "fixture").unwrap();
+        resources
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bundled_process_receives_paths_options_and_cache_without_changing_working_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let settings = BuildSettings {
+            reruns: Some(2),
+            keep_intermediates: true,
+            ..BuildSettings::default()
+        };
+        let request = ready(&project, &settings);
+        let resources = resources(
+            &project,
+            "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$TECTONIC_CACHE_DIR\" \"$@\"\nprintf 'engine diagnostic' >&2\n",
+        );
+        let cwd = std::env::current_dir().unwrap();
+        let output = request.create_session(&resources).unwrap().run().unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let lines: Vec<_> = stdout.lines().collect();
+        assert_eq!(
+            lines,
+            vec![
+                request.filesystem_root().to_str().unwrap(),
+                resources.format_cache.to_str().unwrap(),
+                "--color",
+                "never",
+                "--untrusted",
+                "--only-cached",
+                "--outfmt",
+                "pdf",
+                "--bundle",
+                resources.bundle.to_str().unwrap(),
+                "--outdir",
+                request.output_directory().to_str().unwrap(),
+                "--synctex",
+                "--keep-logs",
+                "--keep-intermediates",
+                "--reruns",
+                "2",
+                "--",
+                request.root_document().to_str().unwrap(),
+            ]
+        );
+        assert_eq!(output.stderr, b"engine diagnostic");
+        assert!(request.output_directory().is_dir());
+        assert!(resources.format_cache.is_dir());
+        assert_eq!(std::env::current_dir().unwrap(), cwd);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_failures_include_exit_status_and_engine_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let request = ready(&project, &BuildSettings::default());
+        let resources = resources(&project, "#!/bin/sh\nprintf 'TeX error\\n'\nprintf 'missing input\\n' >&2\nexit 7\n");
+        let error = request.create_session(&resources).unwrap().run().unwrap_err();
+        assert!(error.contains("7") && error.contains("TeX error") && error.contains("missing input"));
+        std::fs::set_permissions(&resources.executable, {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::Permissions::from_mode(0o644)
+        })
+        .unwrap();
+        assert!(
+            request
+                .create_session(&resources)
+                .unwrap()
+                .run()
+                .unwrap_err()
+                .contains("Could not launch")
+        );
+    }
+
+    #[test]
+    fn automatic_reruns_and_disabled_options_are_not_passed_to_the_engine() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let settings = BuildSettings {
+            synctex: false,
+            keep_logs: false,
+            keep_intermediates: false,
+            reruns: None,
+            ..BuildSettings::default()
+        };
+        let request = ready(&project, &settings);
+        let resources = BundledResources::new(&project.root.join("resources"), &project.root.join("cache")).unwrap();
+        let command = request.command(&resources);
+        let args: Vec<_> = command.get_args().collect();
+        for flag in ["--synctex", "--keep-logs", "--keep-intermediates", "--reruns"] {
+            assert!(!args.iter().any(|arg| *arg == flag));
+        }
+    }
+
+    #[test]
+    fn session_creation_revalidates_roots_and_reports_missing_resources() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let request = ready(&project, &BuildSettings::default());
+        let resources = BundledResources::new(&project.root.join("resources"), &project.root.join("cache")).unwrap();
+        let Err(error) = request.create_session(&resources) else {
+            panic!("expected missing executable")
+        };
+        assert!(error.contains("bundled Tectonic executable"));
+        std::fs::create_dir_all(resources.executable.parent().unwrap()).unwrap();
+        std::fs::write(&resources.executable, "fixture").unwrap();
+        let Err(error) = request.create_session(&resources) else {
+            panic!("expected missing bundle")
+        };
+        assert!(error.contains("bundled TeX resources"));
+        std::fs::remove_file(request.root_document()).unwrap();
+        assert!(request.create_session(&resources).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_cannot_move_root_or_output_outside_the_project() {
+        let directory = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let mut project = project(directory.path());
+        std::fs::write(outside.path().join("main.tex"), "\\bye").unwrap();
+        std::os::unix::fs::symlink(outside.path(), project.root.join("external")).unwrap();
+        let settings = BuildSettings {
+            output_directory: "external/output".into(),
+            ..BuildSettings::default()
+        };
+        assert!(BuildRequest::prepare(&project, &settings, &[]).is_err());
+        project.root_document = Some("external/main.tex".into());
+        assert!(BuildRequest::prepare(&project, &BuildSettings::default(), &[]).is_err());
+    }
+}
