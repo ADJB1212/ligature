@@ -3077,6 +3077,10 @@ version = "0.0.1"
 [[package]]
 name = "ligature-project"
 version = "0.0.1"
+dependencies = [
+ "ligature-fs",
+ "tempfile",
+]
 
 [[package]]
 name = "ligature-search"
@@ -3085,6 +3089,12 @@ version = "0.0.1"
 [[package]]
 name = "ligature-settings"
 version = "0.0.1"
+dependencies = [
+ "ligature-fs",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "ligature-synctex"
@@ -3125,6 +3135,8 @@ dependencies = [
  "ligature-buffer",
  "ligature-editor",
  "ligature-fs",
+ "ligature-project",
+ "ligature-settings",
  "ligature-theme",
  "ligature-ui",
  "tempfile",

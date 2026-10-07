@@ -9,5 +9,11 @@ license.workspace = true
 publish = false
 description = "TeX project membership, root-document selection, and relationships between project files"
 
+[dependencies]
+ligature-fs.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27"
+
 [lints]
 workspace = true

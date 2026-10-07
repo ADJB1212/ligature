@@ -38,6 +38,28 @@ pub struct LoadedFile {
     pub text: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectoryEntry {
+    pub path: PathBuf,
+    pub is_directory: bool,
+}
+
+pub fn read_directory(path: &Path) -> Result<Vec<DirectoryEntry>, FileError> {
+    let mut entries = fs::read_dir(path)
+        .map_err(|err| error(path, "list", err))?
+        .map(|entry| {
+            let entry = entry.map_err(|err| error(path, "list", err))?;
+            let kind = entry.file_type().map_err(|err| error(&entry.path(), "inspect", err))?;
+            Ok(DirectoryEntry {
+                path: entry.path(),
+                is_directory: kind.is_dir(),
+            })
+        })
+        .collect::<Result<Vec<_>, FileError>>()?;
+    entries.sort_by(|a, b| b.is_directory.cmp(&a.is_directory).then_with(|| a.path.cmp(&b.path)));
+    Ok(entries)
+}
+
 pub fn decode(path: &Path, bytes: Vec<u8>) -> Result<String, FileError> {
     String::from_utf8(bytes).map_err(|_| error(path, "read", "unsupported encoding; only UTF-8 text is supported"))
 }

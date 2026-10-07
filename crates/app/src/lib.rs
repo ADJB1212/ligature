@@ -2,7 +2,7 @@
 
 use gpui::{App, Bounds, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOptions, prelude::*, px, size};
 use ligature_core::APP_NAME;
-use ligature_workspace::{Close, New, Open, Quit, Save, SaveAs, Workspace};
+use ligature_workspace::{Close, New, NextTab, Open, OpenProject, PreviousTab, Quit, Save, SaveAs, SelectRoot, Workspace};
 
 /// Start the native event loop and open the workspace window.
 pub fn run() {
@@ -22,12 +22,16 @@ pub fn run() {
             Menu::new("File").items([
                 MenuItem::action("New", New),
                 MenuItem::action("Open...", Open),
+                MenuItem::action("Open Folder...", OpenProject),
                 MenuItem::separator(),
                 MenuItem::action("Save", Save),
                 MenuItem::action("Save As...", SaveAs),
                 MenuItem::separator(),
                 MenuItem::action("Close", Close),
+                MenuItem::separator(),
+                MenuItem::action("Set Active Document as Project Root", SelectRoot),
             ]),
+            Menu::new("Window").items([MenuItem::action("Next Tab", NextTab), MenuItem::action("Previous Tab", PreviousTab)]),
         ]);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
@@ -47,7 +51,13 @@ pub fn run() {
                 window_min_size: Some(size(px(640.0), px(480.0))),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| Workspace::new(window, cx)),
+            |window, cx| {
+                cx.new(|cx| {
+                    let mut workspace = Workspace::new(window, cx);
+                    workspace.restore_session(window, cx);
+                    workspace
+                })
+            },
         )
         .expect("failed to open the Ligature window");
         cx.activate(true);

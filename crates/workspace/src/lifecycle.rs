@@ -5,13 +5,18 @@ use ligature_fs::{FileState, decode};
 
 use crate::Workspace;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) enum Intent {
     New,
     Open,
+    OpenPath(PathBuf),
+    OpenProject,
+    SelectRoot,
+    Restore,
     Save,
     SaveAs,
     Close,
+    CloseTab(usize),
     CloseWindow,
     Quit,
     CheckExternal,
@@ -28,7 +33,10 @@ impl Workspace {
         }
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let result = perform(&this, cx, intent).await;
+            let mut result = perform(&this, cx, intent.clone()).await;
+            if result.is_ok() && !matches!(intent, Intent::Quit | Intent::CloseWindow | Intent::Restore) {
+                result = super::session::save_session(&this, cx).await;
+            }
             this.update_in(cx, |workspace, window, cx| {
                 workspace.busy = false;
                 if let Err(error) = result {
@@ -52,22 +60,27 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
         Intent::Save | Intent::SaveAs => {
             save(this, cx, matches!(intent, Intent::SaveAs)).await?;
         }
-        Intent::Open => {
-            let picker = cx
-                .update(|_, cx| {
-                    cx.prompt_for_paths(PathPromptOptions {
-                        files: true,
-                        directories: false,
-                        multiple: false,
-                        prompt: Some("Open a TeX document".into()),
+        Intent::Open | Intent::OpenPath(_) => {
+            let path = if let Intent::OpenPath(path) = intent {
+                path
+            } else {
+                let picker = cx
+                    .update(|_, cx| {
+                        cx.prompt_for_paths(PathPromptOptions {
+                            files: true,
+                            directories: false,
+                            multiple: false,
+                            prompt: Some("Open a TeX document".into()),
+                        })
                     })
-                })
-                .map_err(|err| err.to_string())?;
-            let Some(paths) = picker.await.map_err(|err| err.to_string())?.map_err(|err| err.to_string())? else {
-                return Ok(());
-            };
-            let Some(path) = paths.into_iter().next() else {
-                return Ok(());
+                    .map_err(|err| err.to_string())?;
+                let Some(paths) = picker.await.map_err(|err| err.to_string())?.map_err(|err| err.to_string())? else {
+                    return Ok(());
+                };
+                let Some(path) = paths.into_iter().next() else {
+                    return Ok(());
+                };
+                path
             };
             let path = cx
                 .background_executor()
@@ -75,9 +88,7 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
                 .await
                 .map_err(|err| err.to_string())?;
             let same = this
-                .update_in(cx, |workspace, _, _| {
-                    workspace.document.as_ref().is_some_and(|document| document.path.as_ref() == Some(&path))
-                })
+                .update_in(cx, |workspace, window, cx| workspace.activate_path(&path, window, cx))
                 .map_err(|err| err.to_string())?;
             if same {
                 return Ok(());
@@ -87,31 +98,76 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
                 .spawn(async move { ligature_fs::read(&path) })
                 .await
                 .map_err(|err| err.to_string())?;
-            if confirm_discard(this, cx).await? {
-                this.update_in(cx, |workspace, window, cx| workspace.replace_document(Some(loaded), window, cx))
-                    .map_err(|err| err.to_string())?;
-            }
+            this.update_in(cx, |workspace, window, cx| workspace.replace_document(Some(loaded), window, cx))
+                .map_err(|err| err.to_string())?;
         }
         Intent::New => {
-            if confirm_discard(this, cx).await? {
-                this.update_in(cx, |workspace, window, cx| workspace.replace_document(None, window, cx))
-                    .map_err(|err| err.to_string())?;
-            }
+            this.update_in(cx, |workspace, window, cx| workspace.replace_document(None, window, cx))
+                .map_err(|err| err.to_string())?;
+        }
+        Intent::CloseTab(index) => {
+            let original = this
+                .update_in(cx, |workspace, window, cx| {
+                    let original = workspace.active_tab;
+                    workspace.switch_tab(index, window, cx);
+                    original
+                })
+                .map_err(|error| error.to_string())?;
+            let decision = confirm_discard(this, cx).await;
+            this.update_in(cx, |workspace, window, cx| {
+                if matches!(decision, Ok(true)) {
+                    workspace.close_document(window, cx);
+                    if original != index {
+                        workspace.switch_tab(if original > index { original - 1 } else { original }, window, cx);
+                    }
+                } else {
+                    workspace.switch_tab(original, window, cx);
+                }
+            })
+            .map_err(|error| error.to_string())?;
+            decision?;
         }
         Intent::Close | Intent::CloseWindow | Intent::Quit => {
-            if confirm_discard(this, cx).await? {
+            let all = matches!(intent, Intent::CloseWindow | Intent::Quit);
+            if all {
+                let (count, original) = this
+                    .update_in(cx, |workspace, _, _| (workspace.tabs.len(), workspace.active_tab))
+                    .map_err(|error| error.to_string())?;
+                for index in 0..count {
+                    this.update_in(cx, |workspace, window, cx| workspace.switch_tab(index, window, cx))
+                        .map_err(|error| error.to_string())?;
+                    let decision = confirm_discard(this, cx).await;
+                    if !matches!(decision, Ok(true)) {
+                        this.update_in(cx, |workspace, window, cx| workspace.switch_tab(original, window, cx))
+                            .map_err(|error| error.to_string())?;
+                        decision?;
+                        return Ok(());
+                    }
+                }
+                this.update_in(cx, |workspace, window, cx| workspace.switch_tab(original, window, cx))
+                    .map_err(|error| error.to_string())?;
+                super::session::save_session(this, cx).await?;
                 this.update_in(cx, |workspace, window, cx| {
-                    workspace.close_document(cx);
-                    match intent {
-                        Intent::Quit => cx.quit(),
-                        Intent::CloseWindow => window.remove_window(),
-                        _ => {}
+                    workspace.project_task = None;
+                    while workspace.document.is_some() {
+                        workspace.close_document(window, cx);
+                    }
+                    if matches!(intent, Intent::Quit) {
+                        cx.quit();
+                    } else {
+                        window.remove_window();
                     }
                 })
-                .map_err(|err| err.to_string())?;
+                .map_err(|error| error.to_string())?;
+            } else if confirm_discard(this, cx).await? {
+                this.update_in(cx, |workspace, window, cx| workspace.close_document(window, cx))
+                    .map_err(|error| error.to_string())?;
             }
         }
         Intent::CheckExternal => check_external(this, cx).await?,
+        Intent::OpenProject => super::project::open_project(this, cx).await?,
+        Intent::SelectRoot => super::project::select_root(this, cx).await?,
+        Intent::Restore => super::session::restore(this, cx).await?,
     }
     Ok(())
 }
@@ -186,6 +242,14 @@ async fn save(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, save_as
         .await
         .map_err(|err| err.to_string())?;
     let expected = (existing_path.as_ref() == Some(&path)).then_some(disk);
+    let duplicate = this
+        .update_in(cx, |workspace, _, _| {
+            workspace.tabs.iter().flatten().any(|tab| tab.document.path.as_ref() == Some(&path))
+        })
+        .map_err(|err| err.to_string())?;
+    if duplicate {
+        return Err("This file is already open in another tab. Close that tab before using Save As.".into());
+    }
     let (point, text) = this
         .update_in(cx, |workspace, _, cx| {
             workspace
@@ -209,6 +273,7 @@ async fn save(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, save_as
             document.diverged = false;
         }
         workspace.start_watching(window, cx);
+        workspace.update_membership();
     })
     .map_err(|err| err.to_string())?;
     Ok(true)

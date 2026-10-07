@@ -67,6 +67,10 @@ impl Editor {
         &self.state
     }
 
+    pub fn scroll_offset(&self) -> Point<Pixels> {
+        self.scroll
+    }
+
     pub fn set_buffer(&mut self, buffer: Buffer, cx: &mut Context<Self>) {
         self.state = EditorState::new(buffer);
         self.scroll = point(px(0.0), px(0.0));
