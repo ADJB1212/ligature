@@ -222,3 +222,79 @@ pub(super) async fn shutdown(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowC
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{AppContext, TestAppContext};
+
+    #[test]
+    fn repeated_build_actions_leave_the_active_job_in_place() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = ligature_project::Project::open(directory.path()).unwrap();
+        let mut cx = TestAppContext::single();
+        cx.update(crate::init);
+        let window = cx.add_window(Workspace::new);
+        let job = BuildJob::default();
+        cx.update_window(window.into(), |root, window, cx| {
+            root.downcast::<Workspace>().unwrap().update(cx, |workspace, cx| {
+                workspace.project = Some(project);
+                workspace.build_ui.job = Some(job.clone());
+                workspace.start_build(window, cx);
+                workspace.start_build(window, cx);
+                assert!(!workspace.busy);
+                assert!(workspace.build_ui.running());
+                job.fail_installation("fixture failure".into());
+                assert!(!workspace.build_ui.running());
+            });
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn resetting_or_dropping_build_ui_cancels_pending_work() {
+        for reset in [false, true] {
+            let job = BuildJob::default();
+            let mut ui = BuildUi::default();
+            ui.job = Some(job.clone());
+            if reset {
+                ui.reset();
+                assert!(!ui.running());
+            }
+            drop(ui);
+            job.fail_installation("fixture failure".into());
+            assert_eq!(job.snapshot().state, BuildState::Canceled);
+            assert!(job.snapshot().failure.is_none());
+        }
+    }
+
+    #[test]
+    fn shutdown_waits_for_the_canceled_worker_to_retire() {
+        use std::{cell::Cell, rc::Rc};
+
+        let mut cx = TestAppContext::single();
+        cx.update(crate::init);
+        let window = cx.add_window(Workspace::new);
+        let job = BuildJob::default();
+        let retired = Rc::new(Cell::new(false));
+        let completed = Rc::clone(&retired);
+        let _task = cx
+            .update_window(window.into(), |root, window, cx| {
+                root.downcast::<Workspace>().unwrap().update(cx, |workspace, cx| {
+                    workspace.build_ui.job = Some(job.clone());
+                    cx.spawn_in(window, async move |this, cx| {
+                        shutdown(&this, cx).await.unwrap();
+                        completed.set(true);
+                    })
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(!retired.get());
+        job.fail_installation("fixture failure".into());
+        assert_eq!(job.snapshot().state, BuildState::Canceled);
+        cx.background_executor.advance_clock(Duration::from_millis(15));
+        cx.run_until_parked();
+        assert!(retired.get());
+    }
+}

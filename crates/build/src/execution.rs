@@ -105,10 +105,12 @@ impl BuildJob {
         let result = self.execute(request, resources);
         let mut shared = self.0.lock().unwrap();
         if shared.canceled {
+            drop(result);
             shared.snapshot.state = BuildState::Canceled;
         } else {
             match result {
-                Ok(artifacts) => {
+                Ok((directory, artifacts)) => {
+                    let _ = directory.keep();
                     shared.snapshot.state = BuildState::Succeeded;
                     shared.snapshot.artifacts = Some(artifacts);
                 }
@@ -120,7 +122,7 @@ impl BuildJob {
         }
     }
 
-    fn execute(&self, request: &BuildRequest, resources: &BundledResources) -> Result<BuildArtifacts, BuildFailure> {
+    fn execute(&self, request: &BuildRequest, resources: &BundledResources) -> Result<(tempfile::TempDir, BuildArtifacts), BuildFailure> {
         let failure = |kind, message| BuildFailure { kind, message };
         if self.canceled() {
             return Err(failure(FailureKind::Output, "Build canceled".into()));
@@ -202,8 +204,7 @@ impl BuildJob {
             return Err(failure(FailureKind::Output, "Tectonic completed without producing a PDF".into()));
         }
         let synctex = artifact("synctex.gz");
-        let mut shared = self.0.lock().unwrap();
-        if shared.canceled {
+        if self.canceled() {
             return Err(failure(FailureKind::Output, "Build canceled".into()));
         }
         let artifacts = BuildArtifacts {
@@ -211,10 +212,7 @@ impl BuildJob {
             log: log.is_file().then_some(log),
             synctex: synctex.is_file().then_some(synctex),
         };
-        let _ = directory.keep();
-        shared.snapshot.artifacts = Some(artifacts.clone());
-        shared.snapshot.state = BuildState::Succeeded;
-        Ok(artifacts)
+        Ok((directory, artifacts))
     }
 
     fn collect(&self, child: &mut Child) -> Result<ExitStatus, String> {
@@ -273,7 +271,7 @@ impl BuildJob {
     }
 }
 
-struct OutputLease(PathBuf);
+pub(super) struct OutputLease(PathBuf);
 
 fn outputs() -> &'static Mutex<BTreeSet<PathBuf>> {
     static OUTPUTS: OnceLock<Mutex<BTreeSet<PathBuf>>> = OnceLock::new();
@@ -281,7 +279,7 @@ fn outputs() -> &'static Mutex<BTreeSet<PathBuf>> {
 }
 
 impl OutputLease {
-    fn acquire(path: &std::path::Path) -> Result<Self, String> {
+    pub(super) fn acquire(path: &std::path::Path) -> Result<Self, String> {
         let path = std::fs::canonicalize(path).map_err(|error| error.to_string())?;
         if !outputs().lock().unwrap().insert(path.clone()) {
             return Err("Another build owns this output directory. Retry after it finishes.".into());
@@ -293,5 +291,26 @@ impl OutputLease {
 impl Drop for OutputLease {
     fn drop(&mut self) {
         outputs().lock().unwrap().remove(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn output_ownership_resolves_aliases_and_releases_on_drop() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("output");
+        let alias = directory.path().join("alias");
+        std::fs::create_dir(&output).unwrap();
+        std::os::unix::fs::symlink(&output, &alias).unwrap();
+        let lease = OutputLease::acquire(&output).unwrap();
+        assert!(OutputLease::acquire(&alias).is_err());
+        let other = tempfile::tempdir().unwrap();
+        let _independent = OutputLease::acquire(other.path()).unwrap();
+        drop(lease);
+        assert!(OutputLease::acquire(&alias).is_ok());
     }
 }

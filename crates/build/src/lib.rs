@@ -97,6 +97,7 @@ impl BuildRequest {
         Ok(BuildSession {
             command: self.command(resources),
             resources: resources.clone(),
+            output_directory: self.output_directory.clone(),
         })
     }
 
@@ -134,10 +135,12 @@ impl BuildRequest {
 pub struct BuildSession {
     command: Command,
     resources: BundledResources,
+    output_directory: PathBuf,
 }
 
 impl BuildSession {
     pub fn run(&mut self) -> Result<Output, String> {
+        let _lease = execution::OutputLease::acquire(&self.output_directory)?;
         self.resources.validate()?;
         let version = Command::new(&self.resources.executable)
             .arg("--version")
@@ -490,6 +493,128 @@ mod tests {
                 .unwrap_err()
                 .contains("Installation error: bundled Tectonic must be version")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_reaps_the_worker_and_releases_output_for_the_next_build() {
+        use std::{
+            sync::mpsc,
+            thread,
+            time::{Duration, Instant},
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let request = ready(&project, &BuildSettings::default());
+        let resources = resources(&project, "#!/bin/sh\nprintf 'worker:%s\\n' \"$$\"\nwhile :; do :; done\n");
+        let job = BuildJob::default();
+        let worker = job.clone();
+        let worker_request = request.clone();
+        let worker_resources = resources.clone();
+        let (finished, completion) = mpsc::channel();
+        let thread = thread::spawn(move || {
+            worker.run(&worker_request, &worker_resources);
+            finished.send(()).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !job.snapshot().output.starts_with("worker:") && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let output = job.snapshot().output;
+        if !output.starts_with("worker:") {
+            job.cancel();
+            completion.recv_timeout(Duration::from_secs(10)).unwrap();
+            thread.join().unwrap();
+            panic!("Worker did not start: {output}");
+        }
+        // A repeated request on the same job must not launch another worker.
+        job.run(&request, &resources);
+        let other = BuildJob::default();
+        other.run(&request, &resources);
+        let conflict = other.snapshot();
+        let session_error = request.create_session(&resources).unwrap().run().unwrap_err();
+        job.cancel();
+        completion.recv_timeout(Duration::from_secs(10)).unwrap();
+        thread.join().unwrap();
+        assert!(output.starts_with("worker:"), "{output}");
+        assert_eq!(conflict.state, BuildState::Failed);
+        assert!(conflict.failure.unwrap().message.contains("owns this output directory"));
+        assert!(session_error.contains("owns this output directory"));
+        let pid = output.trim().strip_prefix("worker:").unwrap();
+        assert!(
+            !Command::new("/bin/kill")
+                .args(["-0", pid])
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        );
+        let snapshot = job.snapshot();
+        assert_eq!(snapshot.state, BuildState::Canceled);
+        assert!(snapshot.artifacts.is_none());
+        assert!(snapshot.failure.is_none());
+        assert_eq!(std::fs::read_dir(request.output_directory()).unwrap().count(), 0);
+        let _lease = execution::OutputLease::acquire(request.output_directory()).unwrap();
+    }
+
+    #[test]
+    fn cancellation_before_launch_does_not_initialize_resources() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let request = ready(&project, &BuildSettings::default());
+        let resources = BundledResources::new(&project.root.join("missing resources"), &project.root.join("cache")).unwrap();
+        let job = BuildJob::default();
+        job.cancel();
+        job.run(&request, &resources);
+        job.run(&request, &resources);
+        assert_eq!(job.snapshot().state, BuildState::Canceled);
+        assert!(job.snapshot().failure.is_none());
+        assert!(!request.output_directory().exists());
+        assert!(!resources.format_cache.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn successful_single_and_multi_file_jobs_preserve_artifacts_after_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let request = ready(&project, &BuildSettings::default());
+        let resources = BundledResources::new(Path::new(ligature_toolchain::BUILT_RESOURCE_DIRECTORY), &directory.path().join("cache")).unwrap();
+        let mut previous = None;
+        for body in ["Single file", "\\input{chapter α}"] {
+            std::fs::write(request.filesystem_root().join("chapter α.tex"), "Included file").unwrap();
+            std::fs::write(request.root_document(), format!("\\documentclass{{article}}\n\\usepackage{{newcomputermodern}}\n\\begin{{document}}\\special{{dvipdfmx:config z 0}}{body}\\end{{document}}\n")).unwrap();
+            let job = BuildJob::default();
+            job.run(&request, &resources);
+            let snapshot = job.snapshot();
+            assert_eq!(snapshot.state, BuildState::Succeeded, "{snapshot:?}");
+            let artifacts = snapshot.artifacts.unwrap();
+            let pdf = std::fs::read(&artifacts.pdf).unwrap();
+            assert!(pdf.starts_with(b"%PDF-"));
+            assert!(String::from_utf8_lossy(&pdf).contains("NewCM"));
+            assert!(artifacts.log.unwrap().is_file());
+            assert!(artifacts.synctex.unwrap().is_file());
+            if let Some(path) = previous {
+                assert_ne!(artifacts.pdf, path);
+                assert!(std::fs::metadata(path).is_ok());
+            }
+            previous = Some(artifacts.pdf);
+        }
+        let path = previous.unwrap();
+        let pdf = std::fs::read(&path).unwrap();
+        std::fs::write(
+            request.root_document(),
+            "\\documentclass{article}\\begin{document}\\undefinedcommand\\end{document}",
+        )
+        .unwrap();
+        let job = BuildJob::default();
+        job.run(&request, &resources);
+        assert_eq!(job.snapshot().state, BuildState::Failed);
+        assert_eq!(job.snapshot().failure.unwrap().kind, FailureKind::Typesetting);
+        assert!(job.snapshot().artifacts.is_none());
+        assert_eq!(std::fs::read(path).unwrap(), pdf);
+        assert_eq!(std::fs::read_dir(request.output_directory()).unwrap().count(), 2);
     }
 
     #[test]
