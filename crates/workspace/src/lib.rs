@@ -1,5 +1,6 @@
 //! Top-level window views, document lifecycle, pane layout, and feature coordination.
 
+mod builds;
 mod lifecycle;
 mod project;
 mod resources;
@@ -41,7 +42,9 @@ actions!(
         FindPrevious,
         Replace,
         FindInProject,
-        HideSearch
+        HideSearch,
+        Build,
+        CancelBuild
     ]
 );
 
@@ -67,6 +70,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("enter", FindNext, Some("LigatureSearch")),
         KeyBinding::new("shift-enter", FindPrevious, Some("LigatureSearch")),
         KeyBinding::new("escape", HideSearch, Some("LigatureSearch")),
+        KeyBinding::new(&format!("{modifier}-b"), Build, Some("LigatureWorkspace")),
+        KeyBinding::new(&format!("{modifier}-shift-b"), CancelBuild, Some("LigatureWorkspace")),
     ]);
 }
 
@@ -116,6 +121,7 @@ pub struct Workspace {
     session_path: Option<PathBuf>,
     search: search::SearchUi,
     bundle_ui: resources::BundleUi,
+    build_ui: builds::BuildUi,
 }
 
 struct Tab {
@@ -162,6 +168,7 @@ impl Workspace {
             session_path: None,
             search,
             bundle_ui: resources::BundleUi::default(),
+            build_ui: builds::BuildUi::default(),
         }
     }
 
@@ -419,6 +426,8 @@ impl Render for Workspace {
                     .on_action(cx.listener(|this, _: &Close, window, cx| this.start(Intent::Close, window, cx)))
             })
             .on_action(cx.listener(|this, _: &Quit, window, cx| this.request_quit(window, cx)))
+            .on_action(cx.listener(|this, _: &Build, window, cx| this.start_build(window, cx)))
+            .on_action(cx.listener(|this, _: &CancelBuild, _, cx| this.cancel_build(cx)))
             .when(!unavailable, |view| {
                 view.on_action(cx.listener(|this, _: &Find, window, cx| this.show_search(false, false, window, cx)))
                     .on_action(cx.listener(|this, _: &Replace, window, cx| this.show_search(false, true, window, cx)))
@@ -445,6 +454,7 @@ impl Render for Workspace {
                     .when(self.project.is_some(), |view| view.child(self.render_tree(cx)))
                     .child(div().flex_1().min_w(gpui::px(0.0)).child(self.panes.clone())),
             )
+            .when(self.build_ui.visible, |view| view.child(self.render_build_output(cx)))
     }
 }
 
@@ -502,6 +512,22 @@ impl Workspace {
                     .disabled(unavailable)
                     .selected(self.search.visible)
                     .on_click(cx.listener(|this, _, window, cx| this.show_search(false, false, window, cx))),
+            )
+            .child(
+                Button::new("build", "Build")
+                    .disabled(self.busy || self.project.is_none() || self.build_ui.running())
+                    .on_click(cx.listener(|this, _, window, cx| this.start_build(window, cx))),
+            )
+            .when(self.build_ui.running(), |view| {
+                view.child(Button::new("cancel-build", "Cancel Build").on_click(cx.listener(|this, _, _, cx| this.cancel_build(cx))))
+            })
+            .child(
+                Button::new("build-output", "Build Output")
+                    .selected(self.build_ui.visible)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.build_ui.visible = !this.build_ui.visible;
+                        cx.notify();
+                    })),
             )
             .child(
                 Button::new("tex-resources", "TeX Resources")

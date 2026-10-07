@@ -9,6 +9,9 @@ use std::{
     process::{Command, Output, Stdio},
 };
 
+mod execution;
+pub use execution::{BuildArtifacts, BuildFailure, BuildJob, BuildSnapshot, BuildState, FailureKind, LOG_LIMIT};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionOptions {
     pub synctex: bool,
@@ -98,6 +101,10 @@ impl BuildRequest {
     }
 
     fn command(&self, resources: &BundledResources) -> Command {
+        self.command_with_output(resources, &self.output_directory)
+    }
+
+    fn command_with_output(&self, resources: &BundledResources, output_directory: &Path) -> Command {
         let mut command = Command::new(&resources.executable);
         command
             .current_dir(self.filesystem_root())
@@ -106,7 +113,7 @@ impl BuildRequest {
             .args(["--color", "never", "--untrusted", "--only-cached", "--outfmt", "pdf", "--bundle"])
             .arg(&resources.bundle)
             .arg("--outdir")
-            .arg(&self.output_directory);
+            .arg(output_directory);
         if self.options.synctex {
             command.arg("--synctex");
         }

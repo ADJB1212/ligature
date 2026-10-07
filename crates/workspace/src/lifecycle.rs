@@ -21,6 +21,7 @@ pub(super) enum Intent {
     Restore,
     Save,
     SaveAs,
+    Build,
     Close,
     CloseTab(usize),
     CloseWindow,
@@ -173,6 +174,7 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
                 this.update_in(cx, |workspace, window, cx| workspace.switch_tab(original, window, cx))
                     .map_err(|error| error.to_string())?;
                 super::session::save_session(this, cx).await?;
+                super::builds::shutdown(this, cx).await?;
                 this.update_in(cx, |workspace, window, cx| {
                     workspace.project_task = None;
                     workspace.search.cancel();
@@ -195,6 +197,7 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
         Intent::OpenProject => super::project::open_project(this, cx).await?,
         Intent::SelectRoot => super::project::select_root(this, cx).await?,
         Intent::Restore => super::session::restore(this, cx).await?,
+        Intent::Build => super::builds::prepare(this, cx).await?,
     }
     Ok(())
 }
@@ -257,7 +260,7 @@ async fn confirm_discard(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowConte
     }
 }
 
-async fn save(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, save_as: bool) -> Result<bool, String> {
+pub(super) async fn save(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, save_as: bool) -> Result<bool, String> {
     let location = this
         .update_in(cx, |workspace, _, _| {
             workspace

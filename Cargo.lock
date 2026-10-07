@@ -3436,6 +3436,7 @@ version = "0.0.1"
 dependencies = [
  "gpui-ce",
  "ligature-buffer",
+ "ligature-build",
  "ligature-editor",
  "ligature-fs",
  "ligature-project",

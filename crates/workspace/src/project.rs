@@ -48,6 +48,7 @@ pub(super) async fn load_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWin
         })
         .await?;
     this.update_in(cx, |workspace, window, cx| {
+        workspace.build_ui.reset();
         workspace.project_task = None;
         workspace.expanded.clear();
         workspace.directories.clear();

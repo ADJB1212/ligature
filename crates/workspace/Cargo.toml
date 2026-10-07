@@ -19,6 +19,7 @@ ligature-fs.workspace = true
 ligature-project.workspace = true
 ligature-settings.workspace = true
 ligature-search.workspace = true
+ligature-build.workspace = true
 ligature-toolchain.workspace = true
 
 [dev-dependencies]
