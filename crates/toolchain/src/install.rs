@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use zip::{CompressionMethod, ZipWriter, write::FileOptions};
+use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 const UPSTREAM_URL: &str = "https://data1b.fullyjustified.net/tlextras-2022.0r0.tar";
 const UPSTREAM_DIGEST: &str = "6ffe055852f8faf66c0acbe1a7fb27f87b869a90bad1204f3bf4d9683f597c7c";
@@ -137,7 +137,7 @@ fn install_archive(
         .tempfile_in(directory)
         .map_err(|error| error.to_string())?;
     let mut writer = ZipWriter::new(temporary.as_file_mut());
-    let options = FileOptions::default()
+    let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o644)
         .large_file(true);
@@ -150,12 +150,8 @@ fn install_archive(
             continue;
         }
         let path = entry.path().map_err(|error| error.to_string())?;
-        let name = path
-            .to_str()
-            .ok_or("Non-UTF-8 upstream resource name")?
-            .strip_prefix("./")
-            .unwrap_or(path.to_str().unwrap())
-            .to_string();
+        let path = path.to_str().ok_or("Non-UTF-8 upstream resource name")?;
+        let name = path.strip_prefix("./").unwrap_or(path).to_string();
         if !entry.header().entry_type().is_file()
             || Path::new(&name).file_name().and_then(|name| name.to_str()) != Some(name.as_str())
             || !names.insert(name.clone())
@@ -196,7 +192,6 @@ fn install_archive(
     let identity = hex::encode(Sha256::digest(format!("{UPSTREAM_DIGEST}:{}", BUNDLE_SHA256.trim())));
     writer.write_all(identity.as_bytes()).map_err(|error| error.to_string())?;
     writer.finish().map_err(|error| error.to_string())?;
-    drop(writer);
     temporary.as_file().sync_all().map_err(|error| error.to_string())?;
     let checksum = checksum(temporary.path())?;
     let filename = temporary.path().file_name().unwrap().to_str().unwrap().to_string();
@@ -337,7 +332,6 @@ mod tests {
         let mut buffer = [0; 4];
         assert_eq!(reader.read(&mut buffer).unwrap(), 4);
         assert!(reader.read(&mut buffer).unwrap_err().to_string().contains("canceled"));
-        drop(callback);
         assert_eq!(
             updates,
             vec![

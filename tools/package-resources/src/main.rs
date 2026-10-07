@@ -1,6 +1,6 @@
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, io::Write, path::Path, process::Command};
-use zip::{CompressionMethod, ZipWriter, write::FileOptions};
+use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 const UPSTREAM: &str = "https://data1b.fullyjustified.net/tlextras-2022.0r0.tar";
 const UPSTREAM_DIGEST: &str = "6ffe055852f8faf66c0acbe1a7fb27f87b869a90bad1204f3bf4d9683f597c7c";
@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&resources)?;
     let archive = resources.join("ligature-bundle-1.zip");
     let mut zip = ZipWriter::new(fs::File::create(&archive)?);
-    let options = FileOptions::default()
+    let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o644);
     for (name, bytes) in &files {

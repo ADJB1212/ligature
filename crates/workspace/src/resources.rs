@@ -37,10 +37,10 @@ impl Workspace {
         self.bundle_ui.error = None;
         self.bundle_ui.status = Some("Preparing download...".into());
         let cancel = Arc::new(AtomicBool::new(false));
-        self.bundle_ui.cancel = Some(cancel.clone());
+        self.bundle_ui.cancel = Some(Arc::clone(&cancel));
         let progress = Arc::new(Mutex::new(None));
-        let worker_progress = progress.clone();
-        let worker_cancel = cancel.clone();
+        let worker_progress = Arc::clone(&progress);
+        let worker_cancel = Arc::clone(&cancel);
         let (sender, receiver) = mpsc::channel();
         cx.background_executor()
             .spawn(async move {
