@@ -67,6 +67,48 @@ fn open_reuses_the_buffer_and_preserves_unsaved_edits() {
 }
 
 #[test]
+fn inverse_navigation_opens_an_included_file_and_reveals_its_line() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("chapter with spaces.tex");
+    fs::write(&path, "first\nsecond\nthird\n").unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    start(
+        &mut cx,
+        window,
+        Intent::OpenSource(ligature_synctex::SourcePosition {
+            path: path.clone(),
+            line: 2,
+            column: 0,
+        }),
+    );
+    root.read_with(&cx, |workspace, cx| {
+        assert_eq!(workspace.document.as_ref().unwrap().path, Some(fs::canonicalize(&path).unwrap()));
+        assert_eq!(workspace.editor.read(cx).state().selected_text(), "second");
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        assert!(root.read(cx).editor.focus_handle(cx).is_focused(window));
+    })
+    .unwrap();
+    start(
+        &mut cx,
+        window,
+        Intent::OpenSource(ligature_synctex::SourcePosition { path, line: 20, column: 0 }),
+    );
+    assert!(root.read_with(&cx, |workspace, _| workspace.error.as_ref().unwrap().contains("no longer exists")));
+    start(
+        &mut cx,
+        window,
+        Intent::OpenSource(ligature_synctex::SourcePosition {
+            path: directory.path().join("missing.tex"),
+            line: 1,
+            column: 0,
+        }),
+    );
+    assert!(root.read_with(&cx, |workspace, _| workspace.error.is_some()));
+}
+
+#[test]
 fn canceled_open_and_failed_reads_leave_the_document_open() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("invalid.tex");

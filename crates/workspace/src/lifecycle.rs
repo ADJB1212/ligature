@@ -10,6 +10,7 @@ pub(super) enum Intent {
     New,
     Open,
     OpenPath(PathBuf),
+    OpenSource(ligature_synctex::SourcePosition),
     OpenSearchResult {
         path: PathBuf,
         original: String,
@@ -107,6 +108,29 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
                 .map_err(|err| err.to_string())?;
             this.update_in(cx, |workspace, window, cx| workspace.replace_document(Some(loaded), window, cx))
                 .map_err(|err| err.to_string())?;
+        }
+        Intent::OpenSource(source) => {
+            open_path(this, cx, source.path).await?;
+            this.update_in(cx, |workspace, window, cx| {
+                let line = source.line.saturating_sub(1);
+                let state = workspace.editor.read(cx).state();
+                if line >= state.buffer().line_count() {
+                    return Err("The SyncTeX source line no longer exists. Rebuild the document.".into());
+                }
+                let mut range = state.line_range(line);
+                if source.column > 0 {
+                    let text = &state.text()[range.clone()];
+                    let column = text.char_indices().nth(source.column - 1).map_or(text.len(), |(offset, _)| offset);
+                    let start = range.start + column;
+                    range = start..start;
+                }
+                workspace
+                    .editor
+                    .update(cx, |editor, cx| editor.update_state(|state| state.select(range.start, range.end), cx));
+                workspace.focus_editor(window, cx);
+                Ok::<_, String>(())
+            })
+            .map_err(|error| error.to_string())??;
         }
         Intent::New => {
             this.update_in(cx, |workspace, window, cx| workspace.replace_document(None, window, cx))

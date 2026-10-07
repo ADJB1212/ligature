@@ -10,7 +10,9 @@ use std::{
 };
 
 mod execution;
+mod sources;
 pub use execution::{BuildArtifacts, BuildFailure, BuildJob, BuildSnapshot, BuildState, FailureKind, LOG_LIMIT};
+pub use sources::SourceSnapshot;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionOptions {
@@ -593,8 +595,29 @@ mod tests {
             let pdf = std::fs::read(&artifacts.pdf).unwrap();
             assert!(pdf.starts_with(b"%PDF-"));
             assert!(String::from_utf8_lossy(&pdf).contains("NewCM"));
-            assert!(artifacts.log.unwrap().is_file());
-            assert!(artifacts.synctex.unwrap().is_file());
+            assert!(artifacts.log.as_ref().unwrap().is_file());
+            let document = ligature_pdf::Document::load(&artifacts.pdf).unwrap();
+            assert_eq!(document.pages().len(), 1);
+            let raster = document.render(0, 1.0).unwrap();
+            assert!(raster.bgra.as_chunks::<4>().0.iter().any(|pixel| pixel[..3] != [255, 255, 255]));
+            let mapping =
+                ligature_synctex::Mapping::load(artifacts.synctex.as_ref().unwrap(), request.filesystem_root(), document.pages().len()).unwrap();
+            let source_path = if body.starts_with("\\input") {
+                request.filesystem_root().join("chapter α.tex")
+            } else {
+                request.root_document().to_path_buf()
+            };
+            let source = ligature_synctex::SourcePosition {
+                path: std::fs::canonicalize(&source_path).unwrap(),
+                line: if body.starts_with("\\input") { 1 } else { 3 },
+                column: 0,
+            };
+            let point = mapping.forward(&source).unwrap();
+            assert_eq!(point.page, 1);
+            assert!(point.x >= 0.0 && point.x < document.pages()[0].width);
+            assert!(point.y >= 0.0 && point.y < document.pages()[0].height);
+            assert_eq!(mapping.inverse(point).unwrap().path, source.path);
+            assert!(!artifacts.sources_changed);
             if let Some(path) = previous {
                 assert_ne!(artifacts.pdf, path);
                 assert!(std::fs::metadata(path).is_ok());

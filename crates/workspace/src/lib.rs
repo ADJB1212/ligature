@@ -44,11 +44,13 @@ actions!(
         FindInProject,
         HideSearch,
         Build,
-        CancelBuild
+        CancelBuild,
+        ShowInPreview
     ]
 );
 
 pub fn init(cx: &mut App) {
+    ligature_preview::init(cx);
     let modifier = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
     cx.bind_keys([
         KeyBinding::new(&format!("{modifier}-n"), New, Some("LigatureWorkspace")),
@@ -72,6 +74,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("escape", HideSearch, Some("LigatureSearch")),
         KeyBinding::new(&format!("{modifier}-b"), Build, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-shift-b"), CancelBuild, Some("LigatureWorkspace")),
+        KeyBinding::new(&format!("{modifier}-shift-j"), ShowInPreview, Some("LigatureWorkspace")),
     ]);
 }
 
@@ -102,6 +105,8 @@ pub struct Workspace {
     focus: FocusHandle,
     editor: Entity<Editor>,
     panes: Entity<SplitPane>,
+    preview: Entity<ligature_preview::Preview>,
+    _preview_subscription: Subscription,
     document: Option<Document>,
     busy: bool,
     external_pending: bool,
@@ -136,8 +141,15 @@ impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| Editor::new(Buffer::new(), cx));
         window.focus(&editor.focus_handle(cx), cx);
-        let preview = cx.new(|_| PreviewPlaceholder);
-        let panes = cx.new(|_| SplitPane::new(editor.clone().into(), preview.into()));
+        let preview = cx.new(ligature_preview::Preview::new);
+        let panes = cx.new(|_| SplitPane::new(editor.clone().into(), preview.clone().into()));
+        let preview_subscription = cx.subscribe_in(
+            &preview,
+            window,
+            |workspace, _, event: &ligature_preview::InverseNavigation, window, cx| {
+                workspace.start(Intent::OpenSource(event.0.clone()), window, cx);
+            },
+        );
         let subscription = cx.observe(&editor, |workspace, _, cx| workspace.editor_changed(cx));
         let search = search::SearchUi::new(cx);
         let entity = cx.weak_entity();
@@ -149,6 +161,8 @@ impl Workspace {
             focus: cx.focus_handle(),
             editor,
             panes,
+            preview,
+            _preview_subscription: preview_subscription,
             document: Some(Document::untitled()),
             busy: false,
             external_pending: false,
@@ -428,6 +442,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &Quit, window, cx| this.request_quit(window, cx)))
             .on_action(cx.listener(|this, _: &Build, window, cx| this.start_build(window, cx)))
             .on_action(cx.listener(|this, _: &CancelBuild, _, cx| this.cancel_build(cx)))
+            .on_action(cx.listener(|this, _: &ShowInPreview, _, cx| this.show_in_preview(cx)))
             .when(!unavailable, |view| {
                 view.on_action(cx.listener(|this, _: &Find, window, cx| this.show_search(false, false, window, cx)))
                     .on_action(cx.listener(|this, _: &Replace, window, cx| this.show_search(false, true, window, cx)))
@@ -463,6 +478,7 @@ impl Workspace {
         let colors = colors();
         div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(spacing::small())
             .px(spacing::medium())
@@ -521,6 +537,11 @@ impl Workspace {
             .when(self.build_ui.running(), |view| {
                 view.child(Button::new("cancel-build", "Cancel Build").on_click(cx.listener(|this, _, _, cx| this.cancel_build(cx))))
             })
+            .child(
+                Button::new("show-in-preview", "Show in PDF")
+                    .disabled(unavailable)
+                    .on_click(cx.listener(|this, _, _, cx| this.show_in_preview(cx))),
+            )
             .child(
                 Button::new("build-output", "Build Output")
                     .selected(self.build_ui.visible)
@@ -604,22 +625,5 @@ impl Render for EmptyEditor {
             .bg(colors.background)
             .child(caption("DOCUMENT"))
             .child("Create or open a TeX file.")
-    }
-}
-
-struct PreviewPlaceholder;
-impl Render for PreviewPlaceholder {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = colors();
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(spacing::small())
-            .bg(colors.chrome)
-            .child(caption("PROOF"))
-            .child(div().text_color(colors.muted_text).child("No compiled document."))
     }
 }

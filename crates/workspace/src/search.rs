@@ -202,6 +202,9 @@ impl Workspace {
             state.marked_range().map(|_| state.text().to_owned()),
         );
         let changed = self.search.observed.as_ref() != Some(&observed);
+        if changed {
+            self.refresh_preview_staleness(cx);
+        }
         self.search.observed = Some(observed);
         self.refresh_document_search(cx);
         if changed && !self.search.applying {

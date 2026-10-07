@@ -9,5 +9,17 @@ license.workspace = true
 publish = false
 description = "GPUI PDF preview views, page navigation, zoom, and rendered-page caching"
 
+[dependencies]
+gpui.workspace = true
+ligature-pdf.workspace = true
+ligature-synctex.workspace = true
+ligature-theme.workspace = true
+ligature-ui.workspace = true
+image = { version = "0.25", default-features = false }
+
+[dev-dependencies]
+gpui = { workspace = true, default-features = false, features = ["test-support"] }
+tempfile = { version = "3", default-features = false, features = [] }
+
 [lints]
 workspace = true

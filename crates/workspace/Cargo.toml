@@ -21,6 +21,8 @@ ligature-settings.workspace = true
 ligature-search.workspace = true
 ligature-build.workspace = true
 ligature-toolchain.workspace = true
+ligature-preview.workspace = true
+ligature-synctex.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, default-features = false, features = ["test-support"] }

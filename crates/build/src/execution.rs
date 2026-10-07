@@ -40,6 +40,10 @@ pub struct BuildArtifacts {
     pub pdf: PathBuf,
     pub log: Option<PathBuf>,
     pub synctex: Option<PathBuf>,
+    pub source_directory: PathBuf,
+    pub root_document: PathBuf,
+    pub sources: Arc<crate::SourceSnapshot>,
+    pub sources_changed: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -136,6 +140,7 @@ impl BuildJob {
             failure(kind, message)
         })?;
         let _lease = OutputLease::acquire(request.output_directory()).map_err(|message| failure(FailureKind::Output, message))?;
+        let sources = crate::SourceSnapshot::capture(&request.project_root, request.output_directory());
         let mut version = Command::new(&resources.executable)
             .arg("--version")
             .stdin(Stdio::null())
@@ -211,6 +216,10 @@ impl BuildJob {
             pdf,
             log: log.is_file().then_some(log),
             synctex: synctex.is_file().then_some(synctex),
+            source_directory: request.filesystem_root().to_path_buf(),
+            root_document: request.root_document().to_path_buf(),
+            sources_changed: !sources.matches_disk(&request.project_root, request.output_directory()),
+            sources: Arc::new(sources),
         };
         Ok((directory, artifacts))
     }

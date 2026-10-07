@@ -9,5 +9,11 @@ license.workspace = true
 publish = false
 description = "SyncTeX source-to-page and page-to-source position mapping"
 
+[dependencies]
+flate2 = { version = "1", default-features = false, features = ["runtime_detection", "rust_backend"] }
+
+[dev-dependencies]
+tempfile = { version = "3", default-features = false, features = [] }
+
 [lints]
 workspace = true

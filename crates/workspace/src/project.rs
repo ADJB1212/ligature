@@ -49,6 +49,7 @@ pub(super) async fn load_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWin
         .await?;
     this.update_in(cx, |workspace, window, cx| {
         workspace.build_ui.reset();
+        workspace.preview.update(cx, |preview, cx| preview.clear(cx));
         workspace.project_task = None;
         workspace.expanded.clear();
         workspace.directories.clear();
@@ -140,14 +141,19 @@ impl Workspace {
                             text.insert(path.clone(), tab.editor.read(cx).state().text().to_owned());
                         }
                     }
-                    Some((project.clone(), workspace.expanded.clone(), text))
+                    Some((
+                        project.clone(),
+                        workspace.expanded.clone(),
+                        text,
+                        workspace.build_ui.successful_artifacts(),
+                    ))
                 });
-                let Ok(Some((mut project, expanded, text))) = snapshot else {
+                let Ok(Some((mut project, expanded, text, artifacts))) = snapshot else {
                     break;
                 };
                 let root = project.root.clone();
                 let expected_root = root.clone();
-                let (directories, graph, settings, errors) = cx
+                let (directories, graph, settings, errors, stale_pdf) = cx
                     .background_executor()
                     .spawn(async move {
                         let (mut settings, mut errors) = Settings::load(&root.join(PROJECT_FILE));
@@ -172,7 +178,11 @@ impl Workspace {
                                     .map_or_else(|| ligature_fs::read(path).map(|file| file.text).map_err(|error| error.to_string()), Ok)
                             })
                         });
-                        (directories, graph, settings, errors)
+                        let stale_pdf = artifacts.map(|artifacts| {
+                            let stale = !artifacts.sources.matches_disk(&root, &output);
+                            (artifacts.pdf, stale)
+                        });
+                        (directories, graph, settings, errors, stale_pdf)
                     })
                     .await;
                 if this
@@ -204,6 +214,12 @@ impl Workspace {
                         workspace.directories = directories;
                         workspace.includes = graph;
                         workspace.settings_errors = errors;
+                        if let Some((pdf, stale)) = stale_pdf
+                            && workspace.build_ui.successful_artifacts().is_some_and(|artifacts| artifacts.pdf == pdf)
+                        {
+                            workspace.build_ui.disk_stale = stale;
+                        }
+                        workspace.refresh_preview_staleness(cx);
                         if changed {
                             cx.notify();
                         }

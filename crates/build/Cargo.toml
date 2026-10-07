@@ -13,7 +13,12 @@ description = "Bundled TeX process execution and validated build requests"
 ligature-project.workspace = true
 ligature-settings.workspace = true
 ligature-toolchain.workspace = true
+sha2 = { version = "0.11", default-features = false }
 tempfile = { version = "3", default-features = false, features = [] }
+
+[dev-dependencies]
+ligature-pdf.workspace = true
+ligature-synctex.workspace = true
 
 [lints]
 workspace = true

@@ -13,9 +13,13 @@ pub(super) struct BuildUi {
     task: Option<Task<()>>,
     snapshot: BuildSnapshot,
     last_success: Option<BuildArtifacts>,
+    pub disk_stale: bool,
 }
 
 impl BuildUi {
+    pub fn successful_artifacts(&self) -> Option<BuildArtifacts> {
+        self.last_success.clone()
+    }
     pub fn running(&self) -> bool {
         self.job
             .as_ref()
@@ -39,6 +43,53 @@ impl Drop for BuildUi {
 }
 
 impl Workspace {
+    pub(super) fn refresh_preview_staleness(&mut self, cx: &mut Context<Self>) {
+        let stale = self.build_ui.last_success.as_ref().is_some_and(|artifacts| {
+            artifacts.sources_changed
+                || self.build_ui.disk_stale
+                || self.project.as_ref().is_none_or(|project| {
+                    project
+                        .root_document
+                        .as_ref()
+                        .is_none_or(|root| project.root.join(root) != artifacts.root_document)
+                })
+                || self.tabs.iter().any(|tab| {
+                    let (document, editor) = match tab {
+                        Some(tab) => (Some(&tab.document), &tab.editor),
+                        None => (self.document.as_ref(), &self.editor),
+                    };
+                    document.and_then(|document| document.path.as_ref()).is_some_and(|path| {
+                        self.project.as_ref().is_some_and(|project| project.relative(path).is_some())
+                            && !artifacts.sources.matches_text(path, editor.read(cx).state().text())
+                    })
+                })
+        });
+        self.preview.update(cx, |preview, cx| preview.set_stale(stale, cx));
+    }
+
+    pub(super) fn show_in_preview(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.document.as_ref().and_then(|document| document.path.clone()) else {
+            self.error = Some("Save the source document before navigating to the preview".into());
+            cx.notify();
+            return;
+        };
+        let state = self.editor.read(cx).state();
+        let position = state.buffer().offset_to_position(ligature_buffer::ByteOffset(state.caret())).unwrap();
+        let line = state.buffer().line(position.line).unwrap();
+        let column = line[..position.byte_column].chars().count() + 1;
+        self.refresh_preview_staleness(cx);
+        self.preview.update(cx, |preview, cx| {
+            preview.forward(
+                ligature_synctex::SourcePosition {
+                    path,
+                    line: position.line + 1,
+                    column,
+                },
+                cx,
+            )
+        });
+    }
+
     pub(super) fn start_build(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.project.is_none() || self.build_ui.running() {
             return;
@@ -93,11 +144,23 @@ impl Workspace {
                 if this
                     .update_in(cx, |workspace, _, cx| {
                         if let Some(artifacts) = &snapshot.artifacts {
+                            if workspace
+                                .build_ui
+                                .last_success
+                                .as_ref()
+                                .is_none_or(|previous| previous.pdf != artifacts.pdf)
+                            {
+                                workspace.preview.update(cx, |preview, cx| {
+                                    preview.load(artifacts.pdf.clone(), artifacts.synctex.clone(), artifacts.source_directory.clone(), cx)
+                                });
+                            }
                             workspace.build_ui.last_success = Some(artifacts.clone());
+                            workspace.build_ui.disk_stale = false;
                         }
                         workspace.build_ui.snapshot = snapshot;
                         if finished {
                             workspace.build_ui.task = None;
+                            workspace.refresh_preview_staleness(cx);
                         }
                         cx.notify();
                     })
