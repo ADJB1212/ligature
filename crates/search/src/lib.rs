@@ -10,7 +10,7 @@ use regex::{Regex, RegexBuilder};
 use std::{
     ops::Range,
     sync::{
-        Arc, LazyLock,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -40,10 +40,8 @@ impl Cancellation {
 
 pub struct Search {
     pattern: Option<Regex>,
-    word: Option<Regex>,
+    whole_word: bool,
 }
-
-static WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\w$").expect("valid Unicode word pattern"));
 
 impl Search {
     pub fn new(query: &Query) -> Result<Self, String> {
@@ -59,7 +57,7 @@ impl Search {
         };
         Ok(Self {
             pattern,
-            word: query.options.whole_word.then(|| WORD.clone()),
+            whole_word: query.options.whole_word,
         })
     }
 
@@ -89,10 +87,9 @@ impl Search {
     }
 
     fn accepts(&self, text: &str, range: &Range<usize>) -> bool {
-        self.word.as_ref().is_none_or(|word| {
-            let word_char = |ch: Option<char>| ch.is_some_and(|ch| word.is_match(ch.encode_utf8(&mut [0; 4])));
-            !word_char(text[..range.start].chars().next_back()) && !word_char(text[range.end..].chars().next())
-        })
+        !self.whole_word
+            || (!text[..range.start].chars().next_back().is_some_and(regex_syntax::is_word_character)
+                && !text[range.end..].chars().next().is_some_and(regex_syntax::is_word_character))
     }
 }
 
@@ -255,6 +252,15 @@ mod tests {
         assert_eq!(search("e", true, true).find("e e\u{301} _e e2"), vec![0..1]);
         assert_eq!(search("猫", true, true).find("猫 子猫 猫"), vec![0..3, 11..14]);
         assert_eq!(search(".", true, false).find("a.b"), vec![1..2]);
+    }
+
+    #[test]
+    fn whole_word_search_rejects_unicode_marks_connectors_numbers_and_join_controls() {
+        let search = search("e", true, true);
+        for neighbor in ['\u{301}', '\u{203f}', '\u{661}', '\u{200c}', '\u{200d}'] {
+            assert!(search.find(&format!("{neighbor}e e{neighbor}")).is_empty());
+        }
+        assert_eq!(search.find("(e)"), vec![1..2]);
     }
     #[test]
     fn empty_queries_and_zero_matches_have_no_navigation_target() {

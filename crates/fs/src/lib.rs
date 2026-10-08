@@ -1,13 +1,14 @@
 //! File reads and writes, atomic saves, path handling, and filesystem watching.
 
+mod watcher;
+
+pub use watcher::FileWatcher;
+
 use std::{
     error::Error,
     fmt, fs,
     io::{self, Write},
     path::{Path, PathBuf},
-    sync::mpsc,
-    thread,
-    time::Duration,
 };
 
 #[derive(Debug)]
@@ -144,41 +145,5 @@ impl FileState {
             Err(err) if err.kind() == io::ErrorKind::NotFound => Self::Missing,
             Err(err) => Self::Unreadable(error(path, "read", err).to_string()),
         }
-    }
-}
-
-pub struct FileWatcher {
-    stop: mpsc::Sender<()>,
-    events: async_channel::Receiver<FileState>,
-}
-
-impl FileWatcher {
-    pub fn new(path: PathBuf, initial: FileState) -> io::Result<Self> {
-        let (stop, stopped) = mpsc::channel();
-        let (sender, events) = async_channel::unbounded();
-        thread::Builder::new().name("ligature-file-watch".to_owned()).spawn(move || {
-            let mut previous = initial;
-            while matches!(stopped.recv_timeout(Duration::from_millis(500)), Err(mpsc::RecvTimeoutError::Timeout)) {
-                let current = FileState::read(&path);
-                if current != previous {
-                    previous = current.clone();
-                    if sender.send_blocking(current).is_err() {
-                        break;
-                    }
-                }
-            }
-        })?;
-        Ok(Self { stop, events })
-    }
-
-    pub fn events(&self) -> async_channel::Receiver<FileState> {
-        self.events.clone()
-    }
-}
-
-impl Drop for FileWatcher {
-    fn drop(&mut self) {
-        let _ = self.stop.send(());
-        self.events.close();
     }
 }

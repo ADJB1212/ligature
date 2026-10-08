@@ -14,6 +14,7 @@ ligature-buffer.workspace = true
 ligature-fs.workspace = true
 ligature-project.workspace = true
 regex = { version = "1", default-features = false, features = ["perf", "std", "unicode"] }
+regex-syntax = { version = "0.8", default-features = false, features = ["std", "unicode-perl"] }
 
 [dev-dependencies]
 tempfile = { version = "3", default-features = false, features = [] }

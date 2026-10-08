@@ -9,5 +9,8 @@ license.workspace = true
 publish = false
 description = "Text storage, edit transactions, undo/redo history, and document positions"
 
+[dependencies]
+memchr = { version = "2", default-features = false, features = ["std"] }
+
 [lints]
 workspace = true

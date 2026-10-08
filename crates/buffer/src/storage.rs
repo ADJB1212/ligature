@@ -312,12 +312,8 @@ impl Buffer {
                 *offset = start + text.len() + (*offset - end);
             }
         }
-        self.line_starts.splice(
-            first..last,
-            text.bytes()
-                .enumerate()
-                .filter_map(|(index, byte)| (byte == b'\n').then_some(start + index + 1)),
-        );
+        self.line_starts
+            .splice(first..last, memchr::memchr_iter(b'\n', text.as_bytes()).map(|index| start + index + 1));
         self.revision = new_revision;
         Edit {
             old_range: range,
@@ -338,7 +334,7 @@ impl Buffer {
 
     fn index_lines(text: &str) -> Vec<usize> {
         let mut starts = vec![0];
-        starts.extend(text.bytes().enumerate().filter_map(|(index, byte)| (byte == b'\n').then_some(index + 1)));
+        starts.extend(memchr::memchr_iter(b'\n', text.as_bytes()).map(|index| index + 1));
         starts
     }
 }

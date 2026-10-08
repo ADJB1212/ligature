@@ -116,6 +116,43 @@ fn checked_save_can_recreate_a_missing_document() {
 }
 
 #[test]
+fn watchers_share_a_directory_and_duplicate_subscriptions_survive_drop() {
+    let directory = tempfile::tempdir().unwrap();
+    let first = directory.path().join("first.tex");
+    let second = directory.path().join("second.tex");
+    fs::write(&first, "initial").unwrap();
+    fs::write(&second, "initial").unwrap();
+    let watcher = FileWatcher::new(first.clone(), FileState::read(&first)).unwrap();
+    let duplicate = FileWatcher::new(first.clone(), FileState::read(&first)).unwrap();
+    let sibling = FileWatcher::new(second.clone(), FileState::read(&second)).unwrap();
+    write_atomic(&first, "updated").unwrap();
+    assert_eq!(wait_for_event(&watcher.events()), FileState::Present(b"updated".to_vec()));
+    assert_eq!(wait_for_event(&duplicate.events()), FileState::Present(b"updated".to_vec()));
+    assert!(sibling.events().is_empty());
+    drop(watcher);
+    write_atomic(&first, "again").unwrap();
+    assert_eq!(wait_for_event(&duplicate.events()), FileState::Present(b"again".to_vec()));
+    drop(duplicate);
+    write_atomic(&second, "sibling").unwrap();
+    assert_eq!(wait_for_event(&sibling.events()), FileState::Present(b"sibling".to_vec()));
+}
+
+#[test]
+fn watcher_reconciles_changes_since_the_initial_snapshot_and_watches_missing_files() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("watched.tex");
+    let initial = FileState::Present(b"initial".to_vec());
+    fs::write(&path, "updated").unwrap();
+    let watcher = FileWatcher::new(path.clone(), initial).unwrap();
+    assert_eq!(wait_for_event(&watcher.events()), FileState::Present(b"updated".to_vec()));
+    drop(watcher);
+    fs::remove_file(&path).unwrap();
+    let watcher = FileWatcher::new(path.clone(), FileState::Missing).unwrap();
+    write_atomic(&path, "created").unwrap();
+    assert_eq!(wait_for_event(&watcher.events()), FileState::Present(b"created".to_vec()));
+}
+
+#[test]
 fn checked_save_rejects_a_file_created_since_the_snapshot() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("new.tex");
