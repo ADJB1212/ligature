@@ -105,12 +105,14 @@ impl Editor {
         }
     }
 
-    pub fn set_diagnostics(&mut self, diagnostics: &[ligature_diagnostics::Diagnostic], stale: bool, cx: &mut Context<Self>) {
+    pub fn set_diagnostics<'a>(
+        &mut self, diagnostics: impl IntoIterator<Item = &'a ligature_diagnostics::Diagnostic>, stale: bool, cx: &mut Context<Self>,
+    ) {
         let ranges = if stale {
             Vec::new()
         } else {
             diagnostics
-                .iter()
+                .into_iter()
                 .filter_map(|diagnostic| {
                     let range = diagnostic.range.as_ref()?.byte_range(self.state.text())?;
                     Some((range, diagnostic.severity))

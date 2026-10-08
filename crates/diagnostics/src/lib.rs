@@ -38,13 +38,14 @@ pub enum SourceRange {
 
 impl SourceRange {
     pub fn byte_range(&self, text: &str) -> Option<Range<usize>> {
-        let line = |number: usize| {
-            let mut start = 0;
-            for _ in 1..number {
-                start += text.get(start..)?.find('\n')? + 1;
-            }
-            if number == 0 {
+        let line_from = |from: (usize, usize), number: usize| {
+            let (mut line, mut start) = from;
+            if number == 0 || number < line {
                 return None;
+            }
+            while line < number {
+                start += text.get(start..)?.find('\n')? + 1;
+                line += 1;
             }
             let rest = text.get(start..)?;
             let end = start + rest.find('\n').unwrap_or(rest.len());
@@ -61,15 +62,22 @@ impl SourceRange {
                 .nth(column)?;
             Some(range.start + offset)
         };
+        let lines = |start: usize, end: usize| {
+            let first = line_from((1, 0), start)?;
+            let last = if start == end {
+                first.clone()
+            } else {
+                line_from((start, first.start), end)?
+            };
+            Some((first, last))
+        };
         let range = match self {
             Self::Lines { start, end } => {
-                let first = line(*start)?;
-                let last = if start == end { first.clone() } else { line(*end)? };
+                let (first, last) = lines(*start, *end)?;
                 first.start..last.end
             }
             Self::Text { start, end } => {
-                let first = line(start.line)?;
-                let last = if start.line == end.line { first.clone() } else { line(end.line)? };
+                let (first, last) = lines(start.line, end.line)?;
                 position(*start, first)?..position(*end, last)?
             }
         };

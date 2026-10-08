@@ -1,5 +1,8 @@
 use crate::{BuildId, Diagnostic, Provider, Severity, SourceRange};
-use std::path::{Component, Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Component, Path, PathBuf},
+};
 
 pub fn parse_tex(log: &str, working_directory: &Path, root_document: &Path, build: BuildId) -> Vec<Diagnostic> {
     let mut parser = Parser {
@@ -8,6 +11,7 @@ pub fn parse_tex(log: &str, working_directory: &Path, root_document: &Path, buil
         stack: Vec::new(),
         pending: None,
         diagnostics: Vec::new(),
+        seen: BTreeSet::new(),
         build,
     };
     for line in log.lines() {
@@ -23,6 +27,7 @@ struct Parser<'a> {
     stack: Vec<Option<PathBuf>>,
     pending: Option<Diagnostic>,
     diagnostics: Vec<Diagnostic>,
+    seen: BTreeSet<Diagnostic>,
     build: BuildId,
 }
 
@@ -43,7 +48,7 @@ impl Parser<'_> {
 
     fn flush(&mut self) {
         if let Some(diagnostic) = self.pending.take()
-            && !self.diagnostics.contains(&diagnostic)
+            && self.seen.insert(diagnostic.clone())
         {
             self.diagnostics.push(diagnostic);
         }
@@ -164,8 +169,8 @@ impl Parser<'_> {
 }
 
 fn leading_number(text: &str) -> Option<usize> {
-    let number: String = text.chars().take_while(char::is_ascii_digit).collect();
-    number.parse().ok().filter(|number| *number > 0)
+    let digits = text.bytes().take_while(u8::is_ascii_digit).count();
+    text[..digits].parse().ok().filter(|number| *number > 0)
 }
 
 fn line_range(message: &str) -> Option<SourceRange> {

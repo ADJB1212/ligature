@@ -35,7 +35,13 @@ impl BuildUi {
             self.diagnostic_temporary_source.clone_from(&snapshot.temporary_source);
         }
     }
-    pub fn diagnostic_snapshot(&self) -> (ligature_diagnostics::BuildId, Option<Arc<ligature_build::SourceSnapshot>>, Vec<PathBuf>) {
+    pub fn diagnostic_snapshot(
+        &self,
+    ) -> (
+        ligature_diagnostics::BuildId,
+        Option<Arc<ligature_build::SourceSnapshot>>,
+        BTreeSet<PathBuf>,
+    ) {
         (
             self.diagnostic_id,
             self.diagnostic_sources.clone(),
@@ -158,10 +164,12 @@ impl Workspace {
                 .diagnostics
                 .iter()
                 .filter(|diagnostic| self.diagnostic_matches(diagnostic, path, editor.read(cx).state().buffer().id()))
-                .cloned()
                 .collect();
-            let stale = diagnostics.iter().any(|diagnostic| self.diagnostic_stale(diagnostic, cx));
-            editor.update(cx, |editor, cx| editor.set_diagnostics(&diagnostics, stale, cx));
+            let mut checked = BTreeSet::new();
+            let stale = diagnostics
+                .iter()
+                .any(|diagnostic| checked.insert(&diagnostic.path) && self.diagnostic_stale(diagnostic, cx));
+            editor.update(cx, |editor, cx| editor.set_diagnostics(diagnostics, stale, cx));
         }
     }
 
