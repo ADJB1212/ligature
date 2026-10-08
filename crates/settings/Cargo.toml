@@ -15,7 +15,7 @@ serde = { version = "1", default-features = false, features = ["std", "derive"] 
 serde_json = { version = "1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-tempfile = { version = "3", default-features = false, features = [] }
+tempfile = { version = "3", default-features = false }
 
 [lints]
 workspace = true

@@ -9,11 +9,14 @@ use std::{
 
 const ENGINE_VERSION: &str = "0.17.0";
 
+mod build_storage;
+
 #[path = "src/bundle.rs"]
 mod bundle;
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-changed=build_storage.rs");
     println!("cargo::rerun-if-changed=src/bundle.rs");
     println!("cargo::rerun-if-changed=resources");
     for name in ["PKG_CONFIG_PATH", "CC", "CXX"] {
@@ -31,8 +34,25 @@ fn build_engine() -> Result<(), String> {
         return Err("Bundled Tectonic currently requires a native macOS build".into());
     }
     let output = PathBuf::from(env::var_os("OUT_DIR").ok_or("Missing OUT_DIR")?);
-    let install = output.join("tectonic-install");
-    let resources = output.join("resources");
+    let build_directory = output.ancestors().nth(2).ok_or("Invalid Cargo output directory")?;
+    let profile_directory = build_directory.parent().ok_or("Missing Cargo profile directory")?;
+    let storage = profile_directory.join("ligature-toolchain");
+    fs::create_dir_all(&storage).map_err(|error| error.to_string())?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(storage.join("build.lock"))
+        .map_err(|error| error.to_string())?;
+    lock.lock().map_err(|error| error.to_string())?;
+    let legacy_outputs = build_storage::legacy_outputs(build_directory).map_err(|error| error.to_string())?;
+    build_storage::migrate_cache(&legacy_outputs, &storage).map_err(|error| error.to_string())?;
+    let install = storage.join("tectonic-install");
+    let staging = tempfile::Builder::new()
+        .prefix("resources-")
+        .tempdir_in(&storage)
+        .map_err(|error| error.to_string())?;
+    let resources = staging.path().join("resources");
     let libraries = resources.join("lib");
     fs::create_dir_all(&install).map_err(|error| error.to_string())?;
     fs::create_dir_all(resources.join("bin")).map_err(|error| error.to_string())?;
@@ -60,7 +80,7 @@ fn build_engine() -> Result<(), String> {
         .arg("--root")
         .arg(&install)
         .arg("--target-dir")
-        .arg(output.join("tectonic-build"))
+        .arg(storage.join("tectonic-build"))
         .arg("--jobs")
         .arg(env::var_os("NUM_JOBS").unwrap_or_else(|| "1".into()))
         .env("TECTONIC_DEP_BACKEND", "pkg-config")
@@ -94,6 +114,9 @@ fn build_engine() -> Result<(), String> {
     sign(&executable)?;
     run(Command::new(&executable).arg("--version"))?;
     stage_resources(&resources)?;
+    build_storage::publish_resources(&resources, &storage).map_err(|error| error.to_string())?;
+    let resources = storage.join("resources");
+    build_storage::prune_legacy_outputs(&legacy_outputs, &resources).map_err(|error| error.to_string())?;
 
     for source in bundled.values() {
         println!("cargo::rerun-if-changed={}", source.display());

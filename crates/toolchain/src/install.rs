@@ -61,6 +61,18 @@ pub(crate) fn read_installation(directory: &Path) -> Result<Option<Installation>
     Ok(Some(installation))
 }
 
+pub fn installed_bundle_path(directory: &Path) -> Result<Option<PathBuf>, String> {
+    if !directory.is_absolute() {
+        return Err("The bundle installation directory must be absolute".into());
+    }
+    let Some(installation) = read_installation(directory)? else {
+        return Ok(None);
+    };
+    let path = directory.join(installation.filename);
+    LocalBundle::open_with_checksum(&path, &installation.checksum)?;
+    Ok(Some(path))
+}
+
 /// Downloads only in response to an explicit user action. Return false to cancel.
 pub fn install_upstream_bundle(
     resources: &BundledResources, directory: &Path, mut progress: impl FnMut(BundleInstallProgress) -> bool,
@@ -77,6 +89,9 @@ pub fn install_upstream_bundle(
         .open(directory.join("ligature-bundle-install.lock"))
         .map_err(|error| error.to_string())?;
     lock.try_lock().map_err(|_| "A TeX bundle installation is already running".to_string())?;
+    if let Ok(Some(path)) = installed_bundle_path(directory) {
+        return Ok(path);
+    }
     if !progress(BundleInstallProgress::Downloading { received: 0, total: None }) {
         return Err("TeX bundle download canceled".into());
     }
@@ -139,6 +154,7 @@ fn install_archive(
     let mut writer = ZipWriter::new(temporary.as_file_mut());
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
+        .compression_level(Some(7))
         .unix_permissions(0o644)
         .large_file(true);
     let mut names = BTreeSet::new();
@@ -262,6 +278,7 @@ mod tests {
     fn install_selects_a_local_bundle_and_invalidates_the_previous_format_cache() {
         let directory = tempfile::tempdir().unwrap();
         let path = install_archive(Cursor::new(valid_archive()), overlay(), directory.path(), &mut |_| true).unwrap();
+        assert_eq!(installed_bundle_path(directory.path()).unwrap(), Some(path.clone()));
         let shipped = BundledResources::new(Path::new(crate::BUILT_RESOURCE_DIRECTORY), &directory.path().join("cache")).unwrap();
         let resources = shipped.clone().with_installed_bundle(directory.path()).unwrap();
         assert_eq!(resources.bundle, path);
@@ -310,10 +327,34 @@ mod tests {
         installation.engine = "older-engine".into();
         fs::write(directory.path().join(INSTALLATION_FILE), serde_json::to_vec(&installation).unwrap()).unwrap();
         assert!(read_installation(directory.path()).unwrap().is_none());
+        assert!(installed_bundle_path(directory.path()).unwrap().is_none());
         installation.engine = ENGINE_VERSION.into();
         installation.fonts = "older-font-revision".into();
         fs::write(directory.path().join(INSTALLATION_FILE), serde_json::to_vec(&installation).unwrap()).unwrap();
         assert!(read_installation(directory.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn installed_bundle_detection_rejects_missing_and_corrupt_archives() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(installed_bundle_path(directory.path()).unwrap().is_none());
+        let path = install_archive(Cursor::new(valid_archive()), overlay(), directory.path(), &mut |_| true).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        fs::write(&path, b"corrupt").unwrap();
+        assert!(installed_bundle_path(directory.path()).unwrap_err().contains("checksum mismatch"));
+        fs::remove_file(&path).unwrap();
+        assert!(installed_bundle_path(directory.path()).is_err());
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(installed_bundle_path(directory.path()).unwrap(), Some(path));
+    }
+
+    #[test]
+    fn installing_an_existing_valid_bundle_skips_the_download() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = install_archive(Cursor::new(valid_archive()), overlay(), directory.path(), &mut |_| true).unwrap();
+        let resources = BundledResources::new(Path::new(crate::BUILT_RESOURCE_DIRECTORY), &directory.path().join("cache")).unwrap();
+        let installed = install_upstream_bundle(&resources, directory.path(), |_| panic!("an installed bundle must not download")).unwrap();
+        assert_eq!(installed, path);
     }
 
     #[test]

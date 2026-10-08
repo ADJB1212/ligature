@@ -13,7 +13,7 @@ description = "SyncTeX source-to-page and page-to-source position mapping"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 [dev-dependencies]
-tempfile = { version = "3", default-features = false, features = [] }
+tempfile = { version = "3", default-features = false }
 
 [lints]
 workspace = true

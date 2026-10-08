@@ -6,7 +6,7 @@ mod bundle;
 mod install;
 pub use bundle::LocalBundle;
 use bundle::{BUNDLE_SHA256, installation_error};
-pub use install::{BundleInstallProgress, install_upstream_bundle, installation_directory};
+pub use install::{BundleInstallProgress, install_upstream_bundle, installation_directory, installed_bundle_path};
 
 pub const ENGINE_VERSION: &str = env!("LIGATURE_TECTONIC_VERSION");
 pub const BUILT_RESOURCE_DIRECTORY: &str = env!("LIGATURE_TECTONIC_RESOURCES");
@@ -47,7 +47,7 @@ impl BundledResources {
                 adjacent
             } else if Path::new(BUILT_RESOURCE_DIRECTORY)
                 .ancestors()
-                .nth(4)
+                .nth(2)
                 .is_some_and(|directory| parent == directory || parent == directory.join("deps"))
             {
                 PathBuf::from(BUILT_RESOURCE_DIRECTORY)
@@ -134,6 +134,16 @@ mod tests {
                 .unwrap_err()
                 .contains("Installation error")
         );
+    }
+
+    #[test]
+    fn development_binaries_find_shared_resources_in_the_profile_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile = Path::new(BUILT_RESOURCE_DIRECTORY).ancestors().nth(2).unwrap();
+        for parent in [profile.to_path_buf(), profile.join("deps")] {
+            let resources = BundledResources::for_executable(&parent.join("ligature"), directory.path()).unwrap();
+            assert_eq!(resources.bundle, Path::new(BUILT_RESOURCE_DIRECTORY).join("tex/ligature-bundle-1.zip"));
+        }
     }
 
     #[test]

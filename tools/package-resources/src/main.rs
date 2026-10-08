@@ -63,6 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut zip = ZipWriter::new(fs::File::create(&archive)?);
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
+        .compression_level(Some(9))
         .unix_permissions(0o644);
     for (name, bytes) in &files {
         zip.start_file(name, options)?;

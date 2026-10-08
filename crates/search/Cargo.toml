@@ -17,7 +17,7 @@ regex = { version = "1", default-features = false, features = ["perf", "std", "u
 regex-syntax = { version = "0.8", default-features = false, features = ["std", "unicode-perl"] }
 
 [dev-dependencies]
-tempfile = { version = "3", default-features = false, features = [] }
+tempfile = { version = "3", default-features = false }
 
 [lints]
 workspace = true

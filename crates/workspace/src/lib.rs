@@ -595,8 +595,11 @@ impl Workspace {
             .child(
                 Button::new("tex-resources", "TeX Resources")
                     .selected(self.bundle_ui.visible)
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    .on_click(cx.listener(|this, _, window, cx| {
                         this.bundle_ui.visible = !this.bundle_ui.visible;
+                        if this.bundle_ui.visible {
+                            this.check_installed_bundle(window, cx);
+                        }
                         cx.notify();
                     })),
             )

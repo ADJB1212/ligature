@@ -10,7 +10,7 @@ publish = false
 description = "File reads and writes, atomic saves, path handling, and filesystem watching"
 
 [dependencies]
-tempfile = { version = "3", default-features = false, features = [] }
+tempfile = { version = "3", default-features = false }
 async-channel = { version = "2.5", default-features = false, features = ["std"] }
 notify = { version = "8.2", default-features = false, features = ["macos_fsevent"] }
 

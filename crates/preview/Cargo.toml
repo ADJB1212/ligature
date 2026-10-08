@@ -19,7 +19,7 @@ image = { version = "0.25", default-features = false }
 
 [dev-dependencies]
 gpui = { workspace = true, default-features = false, features = ["test-support"] }
-tempfile = { version = "3", default-features = false, features = [] }
+tempfile = { version = "3", default-features = false }
 
 [lints]
 workspace = true
