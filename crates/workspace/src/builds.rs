@@ -640,6 +640,7 @@ mod tests {
             workspace.editor.update(cx, |editor, cx| {
                 editor.update_state(
                     |state| {
+                        state.select_all();
                         state.insert("\\documentclass{article}\n\\begin{document}\nUntitled preview\n\\end{document}\n", false);
                     },
                     cx,
@@ -705,9 +706,15 @@ mod tests {
         let document = root.update(&mut cx, |workspace, cx| {
             assert!(workspace.can_build());
             assert!(workspace.project.is_none());
-            workspace
-                .editor
-                .update(cx, |editor, cx| editor.update_state(|state| state.insert("first\nsecond\n", false), cx));
+            workspace.editor.update(cx, |editor, cx| {
+                editor.update_state(
+                    |state| {
+                        state.select_all();
+                        state.insert("first\nsecond\n", false);
+                    },
+                    cx,
+                )
+            });
             let document = workspace.editor.read(cx).state().buffer().id();
             workspace.build_ui.record_completed(&BuildSnapshot {
                 id: ligature_diagnostics::BuildId(1),

@@ -26,6 +26,8 @@ use ligature_ui::{Button, Indicator, SplitPane, caption, chrome_strip, hairline,
 
 use lifecycle::Intent;
 
+const NEW_DOCUMENT: &str = "\\documentclass{article}\n\n\\begin{document}\n\n\\end{document}\n";
+
 actions!(
     ligature_workspace,
     [
@@ -141,7 +143,7 @@ struct Tab {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let editor = cx.new(|cx| Editor::new(Buffer::new(), cx));
+        let editor = cx.new(|cx| Editor::new(Buffer::from_text(NEW_DOCUMENT), cx));
         window.focus(&editor.focus_handle(cx), cx);
         let preview = cx.new(ligature_preview::Preview::new);
         let panes = cx.new(|_| SplitPane::new(editor.clone().into(), preview.clone().into()));
@@ -207,12 +209,12 @@ impl Workspace {
     }
 
     fn replace_document(&mut self, loaded: Option<LoadedFile>, window: &mut Window, cx: &mut Context<Self>) {
-        let reuse_empty = loaded.is_some()
+        let reuse_starter = loaded.is_some()
             && self.tabs.len() == 1
             && self.document.as_ref().is_some_and(|document| document.path.is_none())
-            && self.editor.read(cx).state().text().is_empty()
+            && matches!(self.editor.read(cx).state().text(), "" | NEW_DOCUMENT)
             && !self.dirty(cx);
-        if reuse_empty {
+        if reuse_starter {
             self.stop_watching();
         } else if self.document.is_some() {
             self.park_active();
@@ -233,7 +235,7 @@ impl Workspace {
                 loaded.text,
             )
         } else {
-            (Document::untitled(), String::new())
+            (Document::untitled(), NEW_DOCUMENT.to_owned())
         };
         self.document = Some(document);
         self.editor = cx.new(|cx| Editor::new(Buffer::from_text(text), cx));

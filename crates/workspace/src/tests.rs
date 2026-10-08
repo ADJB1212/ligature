@@ -5,6 +5,16 @@ use gpui::{AppContext, Entity, TestAppContext, WindowHandle};
 use super::*;
 
 fn workspace(cx: &mut TestAppContext) -> (WindowHandle<Workspace>, Entity<Workspace>) {
+    let (window, root) = workspace_with_template(cx);
+    root.update(cx, |workspace, cx| {
+        workspace
+            .editor
+            .update(cx, |editor, cx| editor.update_state(|state| state.reload(String::new()), cx));
+    });
+    (window, root)
+}
+
+fn workspace_with_template(cx: &mut TestAppContext) -> (WindowHandle<Workspace>, Entity<Workspace>) {
     cx.update(init);
     let window = cx.add_window(Workspace::new);
     let root = window.root(cx).unwrap();
@@ -50,14 +60,29 @@ fn open(cx: &mut TestAppContext, window: WindowHandle<Workspace>, path: &Path) {
 }
 
 #[test]
+fn startup_and_new_documents_have_a_clean_latex_template() {
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace_with_template(&mut cx);
+    assert_eq!(text(&cx, &root), "\\documentclass{article}\n\n\\begin{document}\n\n\\end{document}\n");
+    assert!(!root.read_with(&cx, |workspace, cx| workspace.dirty(cx)));
+    type_text(&mut cx, &root, "edited ");
+    start(&mut cx, window, Intent::New);
+    assert_eq!(text(&cx, &root), NEW_DOCUMENT);
+    assert!(!root.read_with(&cx, |workspace, cx| workspace.dirty(cx)));
+    assert!(root.read_with(&cx, |workspace, _| workspace.document.as_ref().unwrap().path.is_none()));
+    assert_eq!(root.read_with(&cx, |workspace, _| workspace.tabs.len()), 2);
+}
+
+#[test]
 fn open_reuses_the_buffer_and_preserves_unsaved_edits() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("example.tex");
     fs::write(&path, "loaded\r\n").unwrap();
     let mut cx = TestAppContext::single();
-    let (window, root) = workspace(&mut cx);
+    let (window, root) = workspace_with_template(&mut cx);
     open(&mut cx, window, &path);
     assert_eq!(text(&cx, &root), "loaded\r\n");
+    assert_eq!(root.read_with(&cx, |workspace, _| workspace.tabs.len()), 1);
     let id = root.read_with(&cx, |workspace, cx| workspace.editor.read(cx).state().buffer().id());
     type_text(&mut cx, &root, "local ");
     open(&mut cx, window, &directory.path().join("./example.tex"));
@@ -206,7 +231,7 @@ fn close_and_quit_cancel_keep_dirty_documents_and_restore_focus() {
     cx.simulate_prompt_answer("Discard");
     cx.run_until_parked();
     start(&mut cx, window, Intent::New);
-    assert_eq!(text(&cx, &root), "");
+    assert_eq!(text(&cx, &root), NEW_DOCUMENT);
     assert!(!root.read_with(&cx, |workspace, cx| workspace.dirty(cx)));
 }
 
@@ -258,7 +283,7 @@ fn saving_during_close_writes_before_releasing_the_document_and_watcher() {
     cx.simulate_keystrokes(window.into(), if cfg!(target_os = "macos") { "cmd-n" } else { "ctrl-n" });
     cx.run_until_parked();
     assert!(root.read_with(&cx, |workspace, _| workspace.document.is_some()));
-    assert_eq!(text(&cx, &root), "");
+    assert_eq!(text(&cx, &root), NEW_DOCUMENT);
 }
 
 #[test]
@@ -475,7 +500,7 @@ fn new_keeps_dirty_tabs_and_closing_selects_a_remaining_tab() {
     let id = root.read_with(&cx, |workspace, _| workspace.editor.entity_id());
     start(&mut cx, window, Intent::New);
     assert!(!cx.has_pending_prompt());
-    assert_eq!(text(&cx, &root), "");
+    assert_eq!(text(&cx, &root), NEW_DOCUMENT);
     start(&mut cx, window, Intent::Close);
     assert_eq!(text(&cx, &root), "first");
     assert_eq!(root.read_with(&cx, |workspace, _| workspace.editor.entity_id()), id);
@@ -516,7 +541,7 @@ fn canceling_window_close_keeps_all_tabs_even_after_discarding_another() {
     assert!(cx.has_pending_prompt());
     cx.simulate_prompt_answer("Cancel");
     cx.run_until_parked();
-    assert_eq!(text(&cx, &root), "second");
+    assert_eq!(text(&cx, &root), format!("second{NEW_DOCUMENT}"));
     root.read_with(&cx, |workspace, cx| {
         assert_eq!(workspace.tabs.len(), 2);
         assert_eq!(workspace.tabs[0].as_ref().unwrap().editor.read(cx).state().text(), "first");
