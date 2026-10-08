@@ -95,6 +95,14 @@ fn relocation_rechecks_whole_word_boundaries() {
 }
 
 #[test]
+fn relocation_preserves_nonoverlapping_match_selection() {
+    let search = search("aa", false);
+    assert_eq!(relocate_match("xaaa", "aaaa", &(1..3), &search), None);
+    assert_eq!(relocate_match("xaaaa", "aaaaa", &(3..5), &search), None);
+    assert_eq!(relocate_match("xaaaa", "y aaaa", &(3..5), &search), Some(4..6));
+}
+
+#[test]
 fn match_descriptions_use_scalar_columns_and_strip_crlf_terminators() {
     let text = "é猫 cat\r\n\r\nβ cat\ncat";
     let ranges = search("cat", false).find(text);

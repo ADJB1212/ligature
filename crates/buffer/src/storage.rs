@@ -33,7 +33,7 @@ impl Revision {
 }
 
 /// Contiguous UTF-8 storage with indexed line starts. Line lookup and slicing
-/// borrow text; replacement moves the suffix and rebuilds the index in O(n).
+/// borrow text; replacement moves the text suffix and updates affected line starts.
 /// LF separates lines; CR is preserved as line content, including in CRLF text.
 /// Every buffer has at least one line, and a final LF creates an empty last line.
 #[derive(Debug)]
@@ -303,7 +303,21 @@ impl Buffer {
         let old_revision = self.revision;
         let new_revision = Revision(old_revision.0.checked_add(1).expect("buffer revision exhausted"));
         self.text.replace_range(range.start().0..range.end().0, text);
-        self.line_starts = Self::index_lines(&self.text);
+        let start = range.start().0;
+        let end = range.end().0;
+        let first = self.line_starts.partition_point(|&offset| offset <= start);
+        let last = self.line_starts.partition_point(|&offset| offset <= end);
+        if text.len() != end - start {
+            for offset in &mut self.line_starts[last..] {
+                *offset = start + text.len() + (*offset - end);
+            }
+        }
+        self.line_starts.splice(
+            first..last,
+            text.bytes()
+                .enumerate()
+                .filter_map(|(index, byte)| (byte == b'\n').then_some(start + index + 1)),
+        );
         self.revision = new_revision;
         Edit {
             old_range: range,

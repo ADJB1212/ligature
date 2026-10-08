@@ -1,6 +1,47 @@
 use super::*;
 
 #[test]
+fn replacements_and_history_preserve_line_positions() {
+    for original in ["", "plain", "\n", "\n\n", "a\n", "a\r\nb\rc", "é猫\n🦀e\u{301}\t\n"] {
+        let boundaries: Vec<_> = (0..=original.len()).filter(|&offset| original.is_char_boundary(offset)).collect();
+        for &start in &boundaries {
+            for &end in boundaries.iter().filter(|&&end| end >= start) {
+                for replacement in ["", "x", "\n", "\n\n", "é\r\n猫\n"] {
+                    let mut expected = original.to_owned();
+                    expected.replace_range(start..end, replacement);
+                    let mut buffer = Buffer::from_text(original);
+                    let range = buffer.text_range(ByteOffset(start), ByteOffset(end)).unwrap();
+                    let changed = buffer.replace(range, replacement).unwrap().is_some();
+                    assert_line_positions(&buffer, &expected);
+                    if changed {
+                        buffer.undo().unwrap();
+                        assert_line_positions(&buffer, original);
+                        buffer.redo().unwrap();
+                        assert_line_positions(&buffer, &expected);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn assert_line_positions(buffer: &Buffer, expected: &str) {
+    assert_eq!(buffer.text(), expected);
+    let lines: Vec<_> = expected.split('\n').collect();
+    assert_eq!(buffer.line_count(), lines.len());
+    let mut start = 0;
+    for (line, text) in lines.into_iter().enumerate() {
+        assert_eq!(buffer.line(line), Ok(text));
+        for column in (0..=text.len()).filter(|&column| text.is_char_boundary(column)) {
+            let position = Position { line, byte_column: column };
+            assert_eq!(buffer.offset_to_position(ByteOffset(start + column)), Ok(position));
+            assert_eq!(buffer.position_to_offset(position), Ok(ByteOffset(start + column)));
+        }
+        start += text.len() + 1;
+    }
+}
+
+#[test]
 fn empty_buffer_has_one_line_and_valid_eof() {
     let buffer = Buffer::new();
     assert!(buffer.is_empty());

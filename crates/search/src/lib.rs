@@ -10,7 +10,7 @@ use regex::{Regex, RegexBuilder};
 use std::{
     ops::Range,
     sync::{
-        Arc,
+        Arc, LazyLock,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -40,9 +40,11 @@ impl Cancellation {
 
 pub struct Search {
     pattern: Option<Regex>,
-    word: Regex,
-    whole_word: bool,
+    word: Option<Regex>,
 }
+
+static WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\w$").expect("valid Unicode word pattern"));
+
 impl Search {
     pub fn new(query: &Query) -> Result<Self, String> {
         let pattern = if query.text.is_empty() {
@@ -57,8 +59,7 @@ impl Search {
         };
         Ok(Self {
             pattern,
-            word: Regex::new(r"^\w$").expect("valid Unicode word pattern"),
-            whole_word: query.options.whole_word,
+            word: query.options.whole_word.then(|| WORD.clone()),
         })
     }
 
@@ -79,7 +80,7 @@ impl Search {
                 return Vec::new();
             }
             let range = matched.range();
-            if self.whole_word && (self.word_char(text[..range.start].chars().next_back()) || self.word_char(text[range.end..].chars().next())) {
+            if !self.accepts(text, &range) {
                 continue;
             }
             found.push(range);
@@ -87,8 +88,11 @@ impl Search {
         if cancellation.is_canceled() { Vec::new() } else { found }
     }
 
-    fn word_char(&self, ch: Option<char>) -> bool {
-        ch.is_some_and(|ch| self.word.is_match(ch.encode_utf8(&mut [0; 4])))
+    fn accepts(&self, text: &str, range: &Range<usize>) -> bool {
+        self.word.as_ref().is_none_or(|word| {
+            let word_char = |ch: Option<char>| ch.is_some_and(|ch| word.is_match(ch.encode_utf8(&mut [0; 4])));
+            !word_char(text[..range.start].chars().next_back()) && !word_char(text[range.end..].chars().next())
+        })
     }
 }
 
@@ -161,7 +165,12 @@ pub fn relocate_match(original: &str, current: &str, range: &Range<usize>, searc
     } else {
         return None;
     };
-    search.find(current).into_iter().find(|matched| matched == &candidate)
+    let matched = search
+        .pattern
+        .as_ref()?
+        .find_iter(current)
+        .find(|matched| matched.start() >= candidate.start)?;
+    (matched.range() == candidate && search.accepts(current, &candidate)).then_some(candidate)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

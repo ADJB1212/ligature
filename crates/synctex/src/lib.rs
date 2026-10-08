@@ -4,6 +4,7 @@ use std::{
     collections::BTreeMap,
     io::Read,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
@@ -26,7 +27,9 @@ pub struct PdfPosition {
 
 #[derive(Clone, Debug)]
 struct Record {
-    source: SourcePosition,
+    path: Arc<PathBuf>,
+    line: usize,
+    column: usize,
     pdf: PdfPosition,
     container: bool,
 }
@@ -81,7 +84,7 @@ impl Mapping {
                 } else {
                     source_directory.join(path)
                 };
-                inputs.insert(tag, std::fs::canonicalize(&path).unwrap_or(path));
+                inputs.insert(tag, Arc::new(std::fs::canonicalize(&path).unwrap_or(path)));
             } else if let Some(value) = line.strip_prefix("Unit:") {
                 unit = number(value)?;
             } else if let Some(value) = line.strip_prefix("Magnification:") {
@@ -119,11 +122,9 @@ impl Mapping {
                     let path = inputs.get(&tag).ok_or("Unknown SyncTeX input tag")?;
                     records.push(Record {
                         container: line.starts_with(['[', '(']),
-                        source: SourcePosition {
-                            path: path.clone(),
-                            line: source_line,
-                            column,
-                        },
+                        path: Arc::clone(path),
+                        line: source_line,
+                        column,
                         pdf: PdfPosition {
                             page,
                             x: (number(x)? + offsets.0) * factor,
@@ -143,14 +144,8 @@ impl Mapping {
         let path = std::fs::canonicalize(&source.path).unwrap_or_else(|_| source.path.clone());
         self.records
             .iter()
-            .filter(|record| record.source.path == path)
-            .min_by_key(|record| {
-                (
-                    record.source.line.abs_diff(source.line),
-                    record.container,
-                    record.source.column.abs_diff(source.column),
-                )
-            })
+            .filter(|record| *record.path == path)
+            .min_by_key(|record| (record.line.abs_diff(source.line), record.container, record.column.abs_diff(source.column)))
             .map(|record| record.pdf)
     }
 
@@ -165,7 +160,11 @@ impl Mapping {
                 let distance = |record: &Record| (record.pdf.x - point.x).powi(2) + (record.pdf.y - point.y).powi(2);
                 distance(a).total_cmp(&distance(b)).then(a.container.cmp(&b.container))
             })
-            .map(|record| record.source.clone())
+            .map(|record| SourcePosition {
+                path: (*record.path).clone(),
+                line: record.line,
+                column: record.column,
+            })
     }
 }
 
@@ -183,6 +182,20 @@ mod tests {
     use super::*;
 
     const DATA: &str = "SyncTeX Version:1\nInput:1:main.tex\nInput:2:chapters/with spaces.tex\nOutput:pdf\nMagnification:1000\nUnit:1\nX Offset:0\nY Offset:0\nContent:\n{1\nx1,3:65536,131072\nx2,12:196608,262144\n}1\nPostamble:\nCount:2\nPost scriptum:\n";
+
+    #[test]
+    fn repeated_input_records_preserve_independent_source_positions() {
+        let data = DATA.replace("x2,12:196608,262144", "x1,3,8:196608,262144\nx1,12,2:327680,393216");
+        let mapping = Mapping::parse(&data, Path::new("/project"), 1).unwrap();
+        for (line, column) in [(3, 0), (3, 8), (12, 2)] {
+            let source = SourcePosition {
+                path: "/project/main.tex".into(),
+                line,
+                column,
+            };
+            assert_eq!(mapping.inverse(mapping.forward(&source).unwrap()), Some(source));
+        }
+    }
 
     #[test]
     fn included_files_and_spaces_map_in_both_directions() {

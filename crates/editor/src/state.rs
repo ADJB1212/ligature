@@ -33,6 +33,7 @@ struct Composition {
     original: Range<usize>,
     original_selection: (usize, usize),
     display: String,
+    line_starts: Vec<usize>,
     replacement: Range<usize>,
     marked: Range<usize>,
 }
@@ -318,6 +319,13 @@ impl EditorState {
         let range = range.or_else(|| self.marked_range()).unwrap_or_else(|| self.selection());
         let mut display = self.text().to_owned();
         display.replace_range(range.clone(), text);
+        let mut line_starts = vec![0];
+        line_starts.extend(
+            display
+                .bytes()
+                .enumerate()
+                .filter_map(|(index, byte)| (byte == b'\n').then_some(index + 1)),
+        );
         let marked = range.start..range.start + text.len();
         if let Some(composition) = &mut self.composition {
             let original_start = map_to_original(range.start, &composition.replacement, &composition.original, false).min(composition.original.start);
@@ -330,6 +338,7 @@ impl EditorState {
             composition.replacement = composition.replacement.start.min(range.start)..replacement_end;
             composition.original = original_start..original_end;
             composition.display = display;
+            composition.line_starts = line_starts;
             composition.marked = marked.clone();
         } else {
             self.buffer.end_typing_group();
@@ -337,6 +346,7 @@ impl EditorState {
                 original: range,
                 original_selection: (self.anchor, self.caret),
                 display,
+                line_starts,
                 replacement: marked.clone(),
                 marked: marked.clone(),
             });
@@ -372,30 +382,27 @@ impl EditorState {
     }
 
     pub fn line_count(&self) -> usize {
-        if self.composition.is_none() {
-            self.buffer.line_count()
-        } else {
-            self.text().bytes().filter(|&byte| byte == b'\n').count() + 1
-        }
+        self.composition
+            .as_ref()
+            .map_or_else(|| self.buffer.line_count(), |composition| composition.line_starts.len())
     }
 
     pub fn line_index(&self, offset: usize) -> usize {
-        if self.composition.is_none() {
-            self.buffer.offset_to_position(ByteOffset(offset)).expect("valid caret").line
-        } else {
-            self.text()[..offset].bytes().filter(|&byte| byte == b'\n').count()
-        }
+        self.composition.as_ref().map_or_else(
+            || self.buffer.offset_to_position(ByteOffset(offset)).expect("valid caret").line,
+            |composition| composition.line_starts.partition_point(|&start| start <= offset) - 1,
+        )
     }
 
     pub fn line_range(&self, line: usize) -> Range<usize> {
-        let start = if self.composition.is_none() {
-            self.buffer.position_to_offset(Position { line, byte_column: 0 }).expect("valid line").0
-        } else if line == 0 {
-            0
+        let (start, end) = if let Some(composition) = &self.composition {
+            let start = composition.line_starts[line];
+            let end = composition.line_starts.get(line + 1).map_or(composition.display.len(), |next| next - 1);
+            (start, end)
         } else {
-            self.text().match_indices('\n').nth(line - 1).expect("valid line").0 + 1
+            let start = self.buffer.position_to_offset(Position { line, byte_column: 0 }).expect("valid line").0;
+            (start, start + self.buffer.line(line).expect("valid line").len())
         };
-        let end = start + self.text()[start..].find('\n').unwrap_or_else(|| self.text().len() - start);
         let end = if end > start && self.text().as_bytes()[end - 1] == b'\r' {
             end - 1
         } else {

@@ -6,6 +6,45 @@ fn editor(text: &str) -> EditorState {
 }
 
 #[test]
+fn composition_line_queries_follow_multiline_updates_commit_and_cancel() {
+    let original = "head\r\nold\n猫\r\n";
+    let mut editor = editor(original);
+    editor.select(6, 10);
+    for replacement in ["", "a\nb\r\n", "猫\r\n🦀\n", "\n", "final"] {
+        editor.mark(None, replacement, None);
+        assert_editor_lines(&editor);
+        assert_eq!(editor.buffer().text(), original);
+    }
+    let committed = editor.text().to_owned();
+    editor.commit_composition();
+    assert_editor_lines(&editor);
+    assert_eq!(editor.buffer().text(), committed);
+    editor.undo();
+    assert_eq!(editor.text(), original);
+    assert_editor_lines(&editor);
+    editor.select_all();
+    editor.mark(None, "\n猫\r\n", None);
+    assert_editor_lines(&editor);
+    editor.cancel_composition();
+    assert_eq!(editor.text(), original);
+    assert_editor_lines(&editor);
+}
+
+fn assert_editor_lines(editor: &EditorState) {
+    let mut start = 0;
+    let lines: Vec<_> = editor.text().split('\n').collect();
+    assert_eq!(editor.line_count(), lines.len());
+    for (line, text) in lines.into_iter().enumerate() {
+        let end = start + text.strip_suffix('\r').unwrap_or(text).len();
+        assert_eq!(editor.line_range(line), start..end);
+        for offset in (0..=text.len()).filter(|&offset| text.is_char_boundary(offset)) {
+            assert_eq!(editor.line_index(start + offset), line);
+        }
+        start += text.len() + 1;
+    }
+}
+
+#[test]
 fn typing_replaces_selection_in_one_undo_transaction() {
     let mut editor = editor("before middle after");
     editor.select(7, 13);
