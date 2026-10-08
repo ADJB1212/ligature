@@ -37,6 +37,8 @@ struct Record {
 #[derive(Clone, Debug)]
 pub struct Mapping {
     records: Vec<Record>,
+    sources: BTreeMap<Arc<PathBuf>, Vec<usize>>,
+    pages: BTreeMap<usize, Vec<usize>>,
 }
 
 pub fn sidecar(pdf: &Path) -> Option<PathBuf> {
@@ -137,14 +139,21 @@ impl Mapping {
         if records.is_empty() {
             return Err("SyncTeX contains no source mappings".into());
         }
-        Ok(Self { records })
+        let mut sources: BTreeMap<Arc<PathBuf>, Vec<usize>> = BTreeMap::new();
+        let mut pages: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (index, record) in records.iter().enumerate() {
+            sources.entry(Arc::clone(&record.path)).or_default().push(index);
+            pages.entry(record.pdf.page).or_default().push(index);
+        }
+        Ok(Self { records, sources, pages })
     }
 
     pub fn forward(&self, source: &SourcePosition) -> Option<PdfPosition> {
         let path = std::fs::canonicalize(&source.path).unwrap_or_else(|_| source.path.clone());
-        self.records
+        self.sources
+            .get(&path)?
             .iter()
-            .filter(|record| *record.path == path)
+            .map(|&index| &self.records[index])
             .min_by_key(|record| (record.line.abs_diff(source.line), record.container, record.column.abs_diff(source.column)))
             .map(|record| record.pdf)
     }
@@ -153,14 +162,16 @@ impl Mapping {
         if !point.x.is_finite() || !point.y.is_finite() {
             return None;
         }
-        self.records
+        self.pages
+            .get(&point.page)?
             .iter()
-            .filter(|record| record.pdf.page == point.page)
-            .min_by(|a, b| {
-                let distance = |record: &Record| (record.pdf.x - point.x).powi(2) + (record.pdf.y - point.y).powi(2);
-                distance(a).total_cmp(&distance(b)).then(a.container.cmp(&b.container))
+            .map(|&index| {
+                let record = &self.records[index];
+                let distance = (record.pdf.x - point.x).powi(2) + (record.pdf.y - point.y).powi(2);
+                (record, distance)
             })
-            .map(|record| SourcePosition {
+            .min_by(|(a, a_distance), (b, b_distance)| a_distance.total_cmp(b_distance).then(a.container.cmp(&b.container)))
+            .map(|(record, _)| SourcePosition {
                 path: (*record.path).clone(),
                 line: record.line,
                 column: record.column,
@@ -182,6 +193,33 @@ mod tests {
     use super::*;
 
     const DATA: &str = "SyncTeX Version:1\nInput:1:main.tex\nInput:2:chapters/with spaces.tex\nOutput:pdf\nMagnification:1000\nUnit:1\nX Offset:0\nY Offset:0\nContent:\n{1\nx1,3:65536,131072\nx2,12:196608,262144\n}1\nPostamble:\nCount:2\nPost scriptum:\n";
+
+    #[test]
+    fn indexed_lookups_preserve_record_order_and_page_isolation() {
+        let data = DATA.replace("}1\n", "x1,3:327680,393216\n}1\n{2\nx2,20:65536,131072\n}2\n");
+        let mapping = Mapping::parse(&data, Path::new("/project"), 2).unwrap();
+        let source = SourcePosition {
+            path: "/project/main.tex".into(),
+            line: 3,
+            column: 0,
+        };
+        let point = mapping.forward(&source).unwrap();
+        assert_eq!(point, mapping.records[0].pdf);
+        assert_eq!(mapping.inverse(point), Some(source));
+        let other = mapping.inverse(PdfPosition { page: 2, ..point }).unwrap();
+        assert_eq!(other.path, Path::new("/project/chapters/with spaces.tex"));
+        assert_eq!(other.line, 20);
+        assert!(mapping.inverse(PdfPosition { page: 3, ..point }).is_none());
+        assert!(
+            mapping
+                .forward(&SourcePosition {
+                    path: "/project/missing.tex".into(),
+                    line: 3,
+                    column: 0
+                })
+                .is_none()
+        );
+    }
 
     #[test]
     fn repeated_input_records_preserve_independent_source_positions() {

@@ -38,8 +38,8 @@ pub enum SourceRange {
 
 impl SourceRange {
     pub fn byte_range(&self, text: &str) -> Option<Range<usize>> {
-        let line_from = |from: (usize, usize), number: usize| {
-            let (mut line, mut start) = from;
+        let (mut line, mut start) = (1, 0);
+        self.byte_range_with_lines(text, |number| {
             if number == 0 || number < line {
                 return None;
             }
@@ -49,8 +49,21 @@ impl SourceRange {
             }
             let rest = text.get(start..)?;
             let end = start + rest.find('\n').unwrap_or(rest.len());
-            let end = if text[..end].ends_with('\r') { end - 1 } else { end };
             Some(start..end)
+        })
+    }
+
+    /// Uses one-based line bounds excluding LF, supplied by an existing line index.
+    pub fn byte_range_with_lines(&self, text: &str, mut line: impl FnMut(usize) -> Option<Range<usize>>) -> Option<Range<usize>> {
+        let mut line = |number| {
+            if number == 0 {
+                return None;
+            }
+            let mut range = line(number)?;
+            if text.get(range.clone())?.ends_with('\r') {
+                range.end -= 1;
+            }
+            Some(range)
         };
         let position = |position: SourcePosition, range: Range<usize>| {
             let content = &text[range.clone()];
@@ -62,13 +75,12 @@ impl SourceRange {
                 .nth(column)?;
             Some(range.start + offset)
         };
-        let lines = |start: usize, end: usize| {
-            let first = line_from((1, 0), start)?;
-            let last = if start == end {
-                first.clone()
-            } else {
-                line_from((start, first.start), end)?
-            };
+        let mut lines = |start: usize, end: usize| {
+            if end < start {
+                return None;
+            }
+            let first = line(start)?;
+            let last = if start == end { first.clone() } else { line(end)? };
             Some((first, last))
         };
         let range = match self {
@@ -115,6 +127,34 @@ pub fn grouped(diagnostics: &[Diagnostic]) -> BTreeMap<(Option<PathBuf>, Severit
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_ranges_match_scanned_ranges() {
+        let text = "first\r\nα😀last\r\n\n";
+        let starts: Vec<_> = std::iter::once(0).chain(text.match_indices('\n').map(|(offset, _)| offset + 1)).collect();
+        let indexed = |range: &SourceRange| {
+            range.byte_range_with_lines(text, |line| {
+                let index = line.checked_sub(1)?;
+                Some(*starts.get(index)?..starts.get(index + 1).map_or(text.len(), |next| next - 1))
+            })
+        };
+        for start in 0..=5 {
+            for end in 0..=5 {
+                let range = SourceRange::Lines { start, end };
+                assert_eq!(indexed(&range), range.byte_range(text));
+                for column in 0..=9 {
+                    let range = SourceRange::Text {
+                        start: SourcePosition { line: start, column },
+                        end: SourcePosition {
+                            line: end,
+                            column: column + 1,
+                        },
+                    };
+                    assert_eq!(indexed(&range), range.byte_range(text));
+                }
+            }
+        }
+    }
 
     #[test]
     fn locations_preserve_line_precision_and_validate_unicode_columns() {

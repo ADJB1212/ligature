@@ -137,10 +137,9 @@ pub fn search_files(root: &Path, output_directory: &Path, canceled: impl Fn() ->
 
 pub fn searchable(path: &Path) -> bool {
     path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| {
-        matches!(
-            extension.to_ascii_lowercase().as_str(),
-            "tex" | "bib" | "sty" | "cls" | "bst" | "ltx" | "dtx" | "ins" | "txt" | "cfg" | "def" | "tikz"
-        )
+        ["tex", "bib", "sty", "cls", "bst", "ltx", "dtx", "ins", "txt", "cfg", "def", "tikz"]
+            .iter()
+            .any(|candidate| extension.eq_ignore_ascii_case(candidate))
     })
 }
 

@@ -114,7 +114,17 @@ impl Editor {
             diagnostics
                 .into_iter()
                 .filter_map(|diagnostic| {
-                    let range = diagnostic.range.as_ref()?.byte_range(self.state.text())?;
+                    let range = diagnostic.range.as_ref()?.byte_range_with_lines(self.state.text(), |line| {
+                        (line <= self.state.line_count()).then(|| {
+                            let start = self.state.line_range(line - 1).start;
+                            let end = if line < self.state.line_count() {
+                                self.state.line_range(line).start - 1
+                            } else {
+                                self.state.text().len()
+                            };
+                            start..end
+                        })
+                    })?;
                     Some((range, diagnostic.severity))
                 })
                 .collect()
@@ -213,14 +223,14 @@ impl Editor {
         self.state.commit_composition();
         self.refresh_search();
         let matches = if all {
-            self.search_matches.clone()
+            self.search_matches.as_slice()
         } else {
             self.search_status()
                 .0
                 .or_else(|| ligature_search::navigate(&self.search_matches, &self.state.selection(), self.state.caret(), false))
-                .map_or_else(Vec::new, |index| vec![self.search_matches[index].clone()])
+                .map_or(&[][..], |index| &self.search_matches[index..index + 1])
         };
-        let Some(edit) = ligature_search::replacement_edit(self.state.text(), &matches, replacement) else {
+        let Some(edit) = ligature_search::replacement_edit(self.state.text(), matches, replacement) else {
             return 0;
         };
         let count = edit.count;
@@ -363,10 +373,13 @@ impl Editor {
         let mut byte = 0;
         for part in text.split('\t') {
             let shaped = self.shape_text(part.to_owned().into(), window, false);
-            boundaries.extend(
-                part.grapheme_indices(true)
-                    .map(|(offset, _)| (byte + offset, x + shaped.x_for_index(offset))),
-            );
+            let mut glyphs = shaped.runs.iter().flat_map(|run| &run.glyphs).peekable();
+            for (offset, _) in part.grapheme_indices(true) {
+                while glyphs.peek().is_some_and(|glyph| glyph.index < offset) {
+                    glyphs.next();
+                }
+                boundaries.push((byte + offset, x + glyphs.peek().map_or(shaped.width, |glyph| glyph.position.x)));
+            }
             x += shaped.width;
             byte += part.len();
             boundaries.push((byte, x));
@@ -880,6 +893,29 @@ mod tests {
     use super::*;
     use gpui::{AppContext, TestAppContext};
     use ligature_buffer::Buffer;
+
+    #[test]
+    fn grapheme_layout_preserves_shaped_caret_positions() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|_, cx| Editor::new(Buffer::new(), cx));
+        let editor = window.root(&mut cx).unwrap();
+        cx.update_window(window.into(), |_, window, cx| {
+            editor.update(cx, |editor, _| {
+                for text in ["", "office affine", "α😀e\u{301}猫", "abc אבג xyz"] {
+                    editor.state = EditorState::new(Buffer::from_text(text));
+                    let layout = editor.shape(0, window);
+                    let shaped = editor.shape_text(text.to_owned().into(), window, false);
+                    let expected: Vec<_> = text
+                        .grapheme_indices(true)
+                        .map(|(offset, _)| (offset, shaped.x_for_index(offset)))
+                        .chain(std::iter::once((text.len(), shaped.width)))
+                        .collect();
+                    assert_eq!(layout.boundaries, expected, "{text}");
+                }
+            });
+        })
+        .unwrap();
+    }
 
     #[test]
     fn read_only_text_can_be_selected_and_copied_but_cannot_be_edited() {

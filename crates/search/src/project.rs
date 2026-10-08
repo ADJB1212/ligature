@@ -1,4 +1,4 @@
-use crate::{Cancellation, Match, Query, ReplacementEdit, Search, describe_matches, describe_matches_cancellable, replacement_edit};
+use crate::{Cancellation, Match, Query, ReplacementEdit, Search, describe_matches_cancellable, replacement_edit_cancellable};
 use ligature_buffer::{DocumentId, Revision};
 use ligature_fs::FileState;
 use std::{
@@ -48,8 +48,8 @@ impl ProjectResults {
             .iter()
             .take_while(|_| !cancellation.is_canceled())
             .filter_map(|file| {
-                let ranges: Vec<_> = file.matches.iter().map(|matched| matched.range.clone()).collect();
-                let edit = replacement_edit(&file.source.text, &ranges, replacement)?;
+                let ranges = file.matches.iter().map(|matched| matched.range.clone());
+                let edit = replacement_edit_cancellable(&file.source.text, ranges, replacement, cancellation)?;
                 let mut after = String::with_capacity(file.source.text.len() - edit.range.len() + edit.text.len());
                 after.push_str(&file.source.text[..edit.range.start]);
                 after.push_str(&edit.text);
@@ -58,6 +58,7 @@ impl ProjectResults {
                 let ranges = file
                     .matches
                     .iter()
+                    .take_while(|_| !cancellation.is_canceled())
                     .map(|matched| {
                         let start = new_offset + matched.range.start - old_offset;
                         let range = start..start + replacement.len();
@@ -66,7 +67,10 @@ impl ProjectResults {
                         range
                     })
                     .collect();
-                let after_matches = describe_matches(&after, ranges);
+                let after_matches = describe_matches_cancellable(&after, ranges, cancellation);
+                if cancellation.is_canceled() {
+                    return None;
+                }
                 Some(FileReplacement {
                     file: file.clone(),
                     edit,
@@ -172,6 +176,7 @@ pub fn apply_disk_replacement(replacement: &FileReplacement) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::describe_matches;
     use ligature_buffer::Buffer;
 
     #[test]

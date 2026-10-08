@@ -121,22 +121,40 @@ pub struct ReplacementEdit {
 }
 
 pub fn replacement_edit(text: &str, matches: &[Range<usize>], replacement: &str) -> Option<ReplacementEdit> {
-    let first = matches.first()?;
-    let last = matches.last()?;
-    let range = first.start..last.end;
-    let mut result = String::new();
+    replacement_edit_cancellable(text, matches.iter().cloned(), replacement, &Cancellation::default())
+}
+
+pub(crate) fn replacement_edit_cancellable(
+    text: &str, matches: impl Iterator<Item = Range<usize>> + Clone, replacement: &str, cancellation: &Cancellation,
+) -> Option<ReplacementEdit> {
+    if cancellation.is_canceled() {
+        return None;
+    }
+    let mut ranges = matches.clone();
+    let first = ranges.next()?;
+    let mut range = first.clone();
+    let mut removed = first.len();
+    let mut count = 1;
+    for matched in ranges {
+        if cancellation.is_canceled() {
+            return None;
+        }
+        range.end = matched.end;
+        removed += matched.len();
+        count += 1;
+    }
+    let mut result = String::with_capacity(range.len() - removed + replacement.len() * count);
     let mut offset = range.start;
     for matched in matches {
+        if cancellation.is_canceled() {
+            return None;
+        }
         result.push_str(&text[offset..matched.start]);
         result.push_str(replacement);
         offset = matched.end;
     }
     result.push_str(&text[offset..range.end]);
-    Some(ReplacementEdit {
-        range,
-        text: result,
-        count: matches.len(),
-    })
+    Some(ReplacementEdit { range, text: result, count })
 }
 
 pub fn relocate_match(original: &str, current: &str, range: &Range<usize>, search: &Search) -> Option<Range<usize>> {
@@ -238,6 +256,21 @@ pub(crate) fn describe_matches_cancellable(text: &str, ranges: Vec<Range<usize>>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn replacement_builder_preserves_gaps_and_cancels_during_iteration() {
+        let text = "α cat\ncat 😀";
+        let ranges = [3..6, 7..10];
+        for replacement in ["", "猫", "longer replacement"] {
+            let edit = super::replacement_edit(text, &ranges, replacement).unwrap();
+            assert_eq!(edit.range, 3..10);
+            assert_eq!(edit.text, format!("{replacement}\n{replacement}"));
+            assert_eq!(edit.count, 2);
+        }
+        let cancellation = super::Cancellation::default();
+        let matches = ranges.into_iter().inspect(|_| cancellation.cancel());
+        assert!(super::replacement_edit_cancellable(text, matches, "replacement", &cancellation).is_none());
+    }
+
     use super::*;
     fn search(text: &str, case_sensitive: bool, whole_word: bool) -> Search {
         Search::new(&Query {
