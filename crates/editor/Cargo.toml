@@ -10,6 +10,7 @@ publish = false
 description = "GPUI text editor views, cursor movement, selections, and editing commands"
 
 [dependencies]
+ligature-diagnostics.workspace = true
 gpui.workspace = true
 ligature-buffer.workspace = true
 ligature-theme.workspace = true

@@ -114,3 +114,54 @@ fn checked_save_can_recreate_a_missing_document() {
         FileState::Missing
     ));
 }
+
+#[test]
+fn checked_save_rejects_a_file_created_since_the_snapshot() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("new.tex");
+    fs::write(&path, "external").unwrap();
+    assert!(write_atomic_checked(&path, "local", Some(&FileState::Missing)).is_err());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "external");
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn checked_save_rejects_a_file_deleted_since_the_snapshot() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("deleted.tex");
+    let expected = FileState::Present(b"original".to_vec());
+    assert!(write_atomic_checked(&path, "local", Some(&expected)).is_err());
+    assert!(!path.exists());
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn checked_save_with_matching_contents_replaces_the_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("document.tex");
+    fs::write(&path, "猫\r\n").unwrap();
+    let expected = FileState::read(&path);
+    let resolved = write_atomic_checked(&path, "updated\n", Some(&expected)).unwrap();
+    assert_eq!(resolved, fs::canonicalize(&path).unwrap());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "updated\n");
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn directory_listing_sorts_directories_before_files() {
+    let directory = tempfile::tempdir().unwrap();
+    for name in ["z-folder", "b-folder"] {
+        fs::create_dir(directory.path().join(name)).unwrap();
+    }
+    for name in ["c.tex", "a.tex"] {
+        fs::write(directory.path().join(name), "").unwrap();
+    }
+    let entries = ligature_fs::read_directory(directory.path()).unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| (entry.path.file_name().unwrap().to_str().unwrap(), entry.is_directory))
+            .collect::<Vec<_>>(),
+        vec![("b-folder", true), ("z-folder", true), ("a.tex", false), ("c.tex", false)]
+    );
+}

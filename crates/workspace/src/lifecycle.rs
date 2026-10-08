@@ -11,6 +11,7 @@ pub(super) enum Intent {
     Open,
     OpenPath(PathBuf),
     OpenSource(ligature_synctex::SourcePosition),
+    OpenDiagnostic(ligature_diagnostics::Diagnostic),
     OpenSearchResult {
         path: PathBuf,
         original: String,
@@ -108,6 +109,25 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
                 .map_err(|err| err.to_string())?;
             this.update_in(cx, |workspace, window, cx| workspace.replace_document(Some(loaded), window, cx))
                 .map_err(|err| err.to_string())?;
+        }
+        Intent::OpenDiagnostic(diagnostic) => {
+            let path = diagnostic
+                .path
+                .ok_or("This diagnostic has no source file. See the raw build log for details.")?;
+            open_path(this, cx, path).await?;
+            this.update_in(cx, |workspace, window, cx| {
+                if let Some(range) = diagnostic.range {
+                    let range = range
+                        .byte_range(workspace.editor.read(cx).state().text())
+                        .ok_or("The diagnostic source location no longer exists. Build again.")?;
+                    workspace
+                        .editor
+                        .update(cx, |editor, cx| editor.update_state(|state| state.select(range.start, range.end), cx));
+                }
+                workspace.focus_editor(window, cx);
+                Ok::<_, String>(())
+            })
+            .map_err(|error| error.to_string())??;
         }
         Intent::OpenSource(source) => {
             open_path(this, cx, source.path).await?;
@@ -227,6 +247,12 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
 }
 
 async fn open_path(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, path: PathBuf) -> Result<(), String> {
+    if this
+        .update_in(cx, |workspace, window, cx| workspace.activate_build_source(&path, window, cx))
+        .map_err(|error| error.to_string())??
+    {
+        return Ok(());
+    }
     let path = cx
         .background_executor()
         .spawn(async move { ligature_fs::resolve(&path) })

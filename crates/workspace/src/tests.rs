@@ -67,6 +67,39 @@ fn open_reuses_the_buffer_and_preserves_unsaved_edits() {
 }
 
 #[test]
+fn diagnostic_navigation_opens_included_files_and_reports_missing_locations() {
+    use ligature_diagnostics::{BuildId, Diagnostic, Provider, Severity, SourceRange};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("included α.tex");
+    fs::write(&path, "first\nsecond\nthird").unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    let mut diagnostic = Diagnostic {
+        severity: Severity::Error,
+        provider: Provider::Build(BuildId(1)),
+        path: Some(path.clone()),
+        range: Some(SourceRange::Lines { start: 2, end: 2 }),
+        message: "Undefined control sequence".into(),
+    };
+    start(&mut cx, window, Intent::OpenDiagnostic(diagnostic.clone()));
+    root.read_with(&cx, |workspace, cx| {
+        assert_eq!(workspace.document.as_ref().unwrap().path, Some(fs::canonicalize(&path).unwrap()));
+        assert_eq!(workspace.editor.read(cx).state().selected_text(), "second");
+    });
+    diagnostic.range = Some(SourceRange::Lines { start: 99, end: 99 });
+    start(&mut cx, window, Intent::OpenDiagnostic(diagnostic.clone()));
+    assert!(root.read_with(&cx, |workspace, _| workspace.error.as_ref().unwrap().contains("no longer exists")));
+    diagnostic.path = Some(directory.path().join("missing.tex"));
+    start(&mut cx, window, Intent::OpenDiagnostic(diagnostic.clone()));
+    assert!(root.read_with(&cx, |workspace, _| workspace.error.is_some()));
+    assert_eq!(text(&cx, &root), "first\nsecond\nthird");
+    diagnostic.path = Some(path);
+    diagnostic.range = None;
+    start(&mut cx, window, Intent::OpenDiagnostic(diagnostic));
+    assert!(root.read_with(&cx, |workspace, _| workspace.error.is_none()));
+}
+
+#[test]
 fn inverse_navigation_opens_an_included_file_and_reveals_its_line() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("chapter with spaces.tex");

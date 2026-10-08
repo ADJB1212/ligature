@@ -3301,6 +3301,7 @@ version = "0.0.1"
 name = "ligature-build"
 version = "0.0.1"
 dependencies = [
+ "ligature-diagnostics",
  "ligature-pdf",
  "ligature-project",
  "ligature-settings",
@@ -3328,6 +3329,7 @@ version = "0.0.1"
 dependencies = [
  "gpui-ce",
  "ligature-buffer",
+ "ligature-diagnostics",
  "ligature-search",
  "ligature-theme",
  "unicode-segmentation",
@@ -3458,6 +3460,7 @@ dependencies = [
  "gpui-ce",
  "ligature-buffer",
  "ligature-build",
+ "ligature-diagnostics",
  "ligature-editor",
  "ligature-fs",
  "ligature-preview",

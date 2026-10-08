@@ -7,6 +7,7 @@ use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
+    sync::Arc,
 };
 
 mod execution;
@@ -34,6 +35,44 @@ pub struct BuildRequest {
 pub enum BuildPreparation {
     SaveRequired(Vec<PathBuf>),
     Ready(BuildRequest),
+}
+
+#[derive(Clone, Debug)]
+pub struct TemporarySource {
+    pub root_document: PathBuf,
+    _directory: Arc<tempfile::TempDir>,
+}
+
+pub struct TextBuild {
+    pub request: BuildRequest,
+    pub source: TemporarySource,
+}
+
+impl TextBuild {
+    pub fn prepare(text: &str, settings: &BuildSettings) -> Result<Self, String> {
+        let directory = tempfile::Builder::new()
+            .prefix("ligature-untitled-")
+            .tempdir()
+            .map_err(|error| format!("Could not prepare untitled build: {error}"))?;
+        let mut project = Project::open(directory.path())?;
+        let root_document = project.root.join("Untitled.tex");
+        std::fs::write(&root_document, text).map_err(|error| format!("Could not stage untitled source: {error}"))?;
+        project.set_root_document(&root_document)?;
+        let settings = BuildSettings {
+            output_directory: "build".into(),
+            ..settings.clone()
+        };
+        let BuildPreparation::Ready(request) = BuildRequest::prepare(&project, &settings, &[])? else {
+            unreachable!();
+        };
+        Ok(Self {
+            request,
+            source: TemporarySource {
+                root_document,
+                _directory: Arc::new(directory),
+            },
+        })
+    }
 }
 
 impl BuildRequest {
@@ -481,6 +520,41 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn completed_jobs_parse_retained_logs_even_when_log_retention_is_disabled() {
+        use ligature_diagnostics::{Provider, Severity, SourceRange};
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let settings = BuildSettings {
+            keep_logs: false,
+            ..BuildSettings::default()
+        };
+        let request = ready(&project, &settings);
+        let resources = resources(
+            &project,
+            concat!(
+                "#!/bin/sh\nwhile [ \"$1\" != '--outdir' ]; do shift; done\nshift\nout=\"$1\"\n",
+                "printf '(./main α.tex\\n(./included.tex\\n! Undefined control sequence.\\nl.3 \\\\bad\\n)\\n)\\n' > \"$out/main α.log\"\n",
+                "printf 'unrecognized engine output\\n'\nexit 1\n"
+            ),
+        );
+        let job = BuildJob::default();
+        job.run(&request, &resources);
+        let snapshot = job.snapshot();
+        assert_eq!(snapshot.state, BuildState::Failed);
+        assert_eq!(snapshot.diagnostics.len(), 1);
+        let diagnostic = &snapshot.diagnostics[0];
+        assert_eq!(diagnostic.severity, Severity::Error);
+        assert_eq!(diagnostic.provider, Provider::Build(snapshot.id));
+        assert_eq!(diagnostic.path, Some(request.filesystem_root().join("included.tex")));
+        assert_eq!(diagnostic.range, Some(SourceRange::Lines { start: 3, end: 3 }));
+        assert!(snapshot.output.contains("unrecognized engine output"));
+        assert!(snapshot.sources.unwrap().matches_text(request.root_document(), "\\bye"));
+        assert_ne!(snapshot.id, BuildJob::default().snapshot().id);
+        assert_eq!(std::fs::read_dir(request.output_directory()).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn incompatible_engine_versions_are_installation_errors() {
         let directory = tempfile::tempdir().unwrap();
         let project = project(directory.path());
@@ -574,6 +648,109 @@ mod tests {
         assert!(job.snapshot().failure.is_none());
         assert!(!request.output_directory().exists());
         assert!(!resources.format_cache.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn text_builds_render_without_a_saved_document_and_own_their_temporary_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let resources = BundledResources::new(Path::new(ligature_toolchain::BUILT_RESOURCE_DIRECTORY), &directory.path().join("cache")).unwrap();
+        let text = "\\documentclass{article}\n\\begin{document}\nUnsaved α document\n\\end{document}\n";
+        let build = TextBuild::prepare(text, &BuildSettings::default()).unwrap();
+        let source = build.source.root_document.clone();
+        let temporary_directory = source.parent().unwrap().to_path_buf();
+        let job = BuildJob::default();
+        job.run_text(&build, &resources);
+        let snapshot = job.snapshot();
+        assert_eq!(snapshot.state, BuildState::Succeeded, "{snapshot:?}");
+        let artifacts = snapshot.artifacts.as_ref().unwrap().clone();
+        assert!(artifacts.temporary_source.is_some());
+        assert!(artifacts.sources.matches_text(&source, text));
+        drop(build);
+        drop(snapshot);
+        drop(job);
+        assert!(source.is_file());
+        assert_eq!(ligature_pdf::Document::load(&artifacts.pdf).unwrap().pages().len(), 1);
+        let mapping = ligature_synctex::Mapping::load(artifacts.synctex.as_ref().unwrap(), &artifacts.source_directory, 1).unwrap();
+        assert!(
+            mapping
+                .forward(&ligature_synctex::SourcePosition {
+                    path: source,
+                    line: 3,
+                    column: 1
+                })
+                .is_some()
+        );
+        drop(artifacts);
+        assert!(!temporary_directory.exists());
+    }
+
+    #[test]
+    fn text_builds_validate_settings_and_cancellation_releases_staged_sources() {
+        let settings = BuildSettings {
+            reruns: Some(11),
+            ..BuildSettings::default()
+        };
+        assert!(TextBuild::prepare("\\bye", &settings).is_err());
+        let build = TextBuild::prepare("\\bye", &BuildSettings::default()).unwrap();
+        let path = build.source.root_document.clone();
+        let resources = BundledResources::new(
+            Path::new(ligature_toolchain::BUILT_RESOURCE_DIRECTORY),
+            &path.parent().unwrap().join("cache"),
+        )
+        .unwrap();
+        let job = BuildJob::default();
+        job.cancel();
+        job.run_text(&build, &resources);
+        assert_eq!(job.snapshot().state, BuildState::Canceled);
+        assert!(job.snapshot().temporary_source.is_none());
+        drop(build);
+        assert!(!path.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bundled_tectonic_diagnostics_locate_included_file_warnings_and_errors() {
+        use ligature_diagnostics::{Severity, SourceRange};
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let request = ready(&project, &BuildSettings::default());
+        let resources = BundledResources::new(Path::new(ligature_toolchain::BUILT_RESOURCE_DIRECTORY), &directory.path().join("cache")).unwrap();
+        let included = request.filesystem_root().join("included α.tex");
+        std::fs::write(
+            request.root_document(),
+            "\\documentclass{article}\n\\begin{document}\n\\input{\"included α\"}\n\\end{document}\n",
+        )
+        .unwrap();
+        std::fs::write(&included, "Reference \\ref{unknown}. Citation \\cite{missing}.\n").unwrap();
+        let warnings = BuildJob::default();
+        warnings.run(&request, &resources);
+        let snapshot = warnings.snapshot();
+        assert_eq!(snapshot.state, BuildState::Succeeded, "{snapshot:?}");
+        for message in ["Reference", "Citation"] {
+            assert!(
+                snapshot.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.severity == Severity::Warning
+                        && diagnostic.message.contains(message)
+                        && diagnostic.path.as_ref() == Some(&included)
+                        && diagnostic.range == Some(SourceRange::Lines { start: 1, end: 1 })
+                }),
+                "{snapshot:?}"
+            );
+        }
+        std::fs::write(&included, "First line\n\\undefinedcommand\n").unwrap();
+        let errors = BuildJob::default();
+        errors.run(&request, &resources);
+        let snapshot = errors.snapshot();
+        assert_eq!(snapshot.state, BuildState::Failed, "{snapshot:?}");
+        assert!(
+            snapshot.diagnostics.iter().any(|diagnostic| {
+                diagnostic.severity == Severity::Error
+                    && diagnostic.path.as_ref() == Some(&included)
+                    && diagnostic.range == Some(SourceRange::Lines { start: 2, end: 2 })
+            }),
+            "{snapshot:?}"
+        );
     }
 
     #[cfg(target_os = "macos")]

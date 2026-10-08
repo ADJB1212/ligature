@@ -49,6 +49,7 @@ pub(super) async fn load_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWin
         .await?;
     this.update_in(cx, |workspace, window, cx| {
         workspace.build_ui.reset();
+        workspace.refresh_diagnostics(cx);
         workspace.preview.update(cx, |preview, cx| preview.clear(cx));
         workspace.project_task = None;
         workspace.expanded.clear();
@@ -146,14 +147,15 @@ impl Workspace {
                         workspace.expanded.clone(),
                         text,
                         workspace.build_ui.successful_artifacts(),
+                        workspace.build_ui.diagnostic_snapshot(),
                     ))
                 });
-                let Ok(Some((mut project, expanded, text, artifacts))) = snapshot else {
+                let Ok(Some((mut project, expanded, text, artifacts, (diagnostic_id, diagnostic_sources, diagnostic_paths)))) = snapshot else {
                     break;
                 };
                 let root = project.root.clone();
                 let expected_root = root.clone();
-                let (directories, graph, settings, errors, stale_pdf) = cx
+                let (directories, graph, settings, errors, stale_pdf, stale_diagnostics) = cx
                     .background_executor()
                     .spawn(async move {
                         let (mut settings, mut errors) = Settings::load(&root.join(PROJECT_FILE));
@@ -182,7 +184,15 @@ impl Workspace {
                             let stale = !artifacts.sources.matches_disk(&root, &output);
                             (artifacts.pdf, stale)
                         });
-                        (directories, graph, settings, errors, stale_pdf)
+                        let stale_diagnostics = diagnostic_paths
+                            .into_iter()
+                            .filter(|path| {
+                                diagnostic_sources
+                                    .as_ref()
+                                    .is_none_or(|sources| std::fs::read_to_string(path).ok().is_none_or(|text| !sources.matches_text(path, &text)))
+                            })
+                            .collect();
+                        (directories, graph, settings, errors, stale_pdf, stale_diagnostics)
                     })
                     .await;
                 if this
@@ -220,7 +230,9 @@ impl Workspace {
                             workspace.build_ui.disk_stale = stale;
                         }
                         workspace.refresh_preview_staleness(cx);
-                        if changed {
+                        let diagnostics_changed = workspace.build_ui.update_diagnostic_disk_staleness(diagnostic_id, stale_diagnostics);
+                        workspace.refresh_diagnostics(cx);
+                        if changed || diagnostics_changed {
                             cx.notify();
                         }
                     })

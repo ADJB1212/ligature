@@ -1,0 +1,15 @@
+This is XeTeX, Version 3.141592653
+(./main.tex
+(/bundle/article.cls (Document Class: article))
+("chapter one.tex"
+! Undefined control sequence.
+    additional context for the error
+l.7 \badcommand
+)
+LaTeX Warning: Reference `intro' on page 1 undefined on input line 12.
+LaTeX Warning: Citation `knuth' on page 1 undefined
+    on input line 13.
+Overfull \hbox (10.0pt too wide) in paragraph at lines 20--22
+Underfull \vbox (badness 10000) has occurred while \output is active
+)
+Unrecognized output remains in the raw log.

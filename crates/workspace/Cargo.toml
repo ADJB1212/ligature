@@ -10,6 +10,7 @@ publish = false
 description = "Top-level window views, pane layout, tabs, and coordination between editor and preview views"
 
 [dependencies]
+ligature-diagnostics.workspace = true
 gpui.workspace = true
 ligature-theme.workspace = true
 ligature-ui.workspace = true

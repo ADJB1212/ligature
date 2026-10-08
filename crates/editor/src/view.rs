@@ -51,6 +51,8 @@ pub struct Editor {
     search: Option<ligature_search::Search>,
     search_matches: Vec<Range<usize>>,
     search_revision: Option<(ligature_buffer::Revision, bool)>,
+    diagnostics: Vec<(Range<usize>, ligature_diagnostics::Severity)>,
+    diagnostic_revision: Option<ligature_buffer::Revision>,
 }
 
 impl Editor {
@@ -76,11 +78,33 @@ impl Editor {
             search: None,
             search_matches: Vec::new(),
             search_revision: None,
+            diagnostics: Vec::new(),
+            diagnostic_revision: None,
         }
     }
 
     pub fn state(&self) -> &EditorState {
         &self.state
+    }
+
+    pub fn set_diagnostics(&mut self, diagnostics: &[ligature_diagnostics::Diagnostic], stale: bool, cx: &mut Context<Self>) {
+        let ranges = if stale {
+            Vec::new()
+        } else {
+            diagnostics
+                .iter()
+                .filter_map(|diagnostic| {
+                    let range = diagnostic.range.as_ref()?.byte_range(self.state.text())?;
+                    Some((range, diagnostic.severity))
+                })
+                .collect()
+        };
+        let revision = self.state.buffer().revision();
+        if self.diagnostics != ranges || self.diagnostic_revision != Some(revision) {
+            self.diagnostics = ranges;
+            self.diagnostic_revision = Some(revision);
+            cx.notify();
+        }
     }
 
     pub fn scroll_offset(&self) -> Point<Pixels> {
@@ -93,6 +117,8 @@ impl Editor {
         self.preferred_x = None;
         self.reveal_caret = true;
         self.search_revision = None;
+        self.diagnostics.clear();
+        self.diagnostic_revision = None;
         self.refresh_search();
         cx.notify();
     }
@@ -649,6 +675,27 @@ impl Editor {
                         .paint(point(origin.x + *x, origin.y), self.line_height, gpui::TextAlign::Left, None, window, cx)
                         .expect("editor text painting failed");
                 }
+                if self.diagnostic_revision == Some(self.state.buffer().revision()) && marked.is_none() {
+                    for (range, severity) in &self.diagnostics {
+                        if (range.start < line_end && range.end > line.range.start)
+                            || (range.is_empty() && range.start >= line.range.start && range.start <= line.range.end)
+                        {
+                            let start = line.x_for_byte(range.start.max(line.range.start));
+                            let end = line.x_for_byte(range.end.min(line.range.end));
+                            window.paint_quad(fill(
+                                Bounds::new(
+                                    point(origin.x + start, origin.y + self.line_height - px(2.0)),
+                                    size((end - start).max(px(4.0)), px(1.0)),
+                                ),
+                                if *severity == ligature_diagnostics::Severity::Error {
+                                    colors.error
+                                } else {
+                                    colors.muted_text
+                                },
+                            ));
+                        }
+                    }
+                }
                 if let Some(marked) = &marked
                     && marked.start <= line.range.end
                     && marked.end >= line.range.start
@@ -766,6 +813,28 @@ mod tests {
     use super::*;
     use gpui::{AppContext, TestAppContext};
     use ligature_buffer::Buffer;
+
+    #[test]
+    fn diagnostic_markers_follow_source_precision_and_clear_when_stale() {
+        use ligature_diagnostics::{BuildId, Diagnostic, Provider, Severity, SourceRange};
+        let mut cx = TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new(Buffer::from_text("first\nα😀last"), cx));
+        let diagnostic = Diagnostic {
+            severity: Severity::Error,
+            provider: Provider::Build(BuildId(1)),
+            message: "Error".into(),
+            path: None,
+            range: Some(SourceRange::Lines { start: 2, end: 2 }),
+        };
+        editor.update(&mut cx, |editor, cx| editor.set_diagnostics(std::slice::from_ref(&diagnostic), false, cx));
+        editor.read_with(&cx, |editor, _| assert_eq!(editor.diagnostics, vec![(6..16, Severity::Error)]));
+        editor.update(&mut cx, |editor, cx| editor.update_state(|state| state.insert("changed", false), cx));
+        editor.read_with(&cx, |editor, _| {
+            assert_ne!(editor.diagnostic_revision, Some(editor.state.buffer().revision()))
+        });
+        editor.update(&mut cx, |editor, cx| editor.set_diagnostics(&[diagnostic], true, cx));
+        editor.read_with(&cx, |editor, _| assert!(editor.diagnostics.is_empty()));
+    }
 
     #[test]
     fn focused_caret_blinks_and_reappears_after_movement() {

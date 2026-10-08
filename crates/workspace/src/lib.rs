@@ -262,6 +262,7 @@ impl Workspace {
         self.panes.update(cx, |panes, cx| panes.set_leading(empty.into(), cx));
         self.update_membership();
         self.search_sources_changed(cx);
+        self.refresh_preview_staleness(cx);
     }
 
     fn park_active(&mut self) {
@@ -531,7 +532,7 @@ impl Workspace {
             )
             .child(
                 Button::new("build", "Build")
-                    .disabled(self.busy || self.project.is_none() || self.build_ui.running())
+                    .disabled(self.busy || !self.can_build() || self.build_ui.running())
                     .on_click(cx.listener(|this, _, window, cx| this.start_build(window, cx))),
             )
             .when(self.build_ui.running(), |view| {

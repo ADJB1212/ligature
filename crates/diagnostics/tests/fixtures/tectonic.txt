@@ -1,0 +1,5 @@
+note: Running TeX ...
+warning: chapters/α.tex:5: Undefined reference `intro'
+error: failed to open the bundle
+error: failed to load font resource
+note: engine output remains available
