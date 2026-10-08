@@ -1,4 +1,4 @@
-use gpui::{App, ClickEvent, ElementId, IntoElement, RenderOnce, SharedString, Window, div, prelude::*};
+use gpui::{App, ClickEvent, ColorExt, ElementId, IntoElement, RenderOnce, SharedString, Window, div, prelude::*};
 use ligature_theme::{colors, spacing, typography};
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -72,7 +72,7 @@ impl RenderOnce for Button {
         } else if filled {
             (colors.accent, colors.on_accent)
         } else if self.selected {
-            (colors.surface, colors.text)
+            (colors.text.opacity(0.14), colors.text)
         } else {
             (gpui::transparent_black(), if quiet { colors.muted_text } else { colors.text })
         };
@@ -100,7 +100,14 @@ impl RenderOnce for Button {
                         if filled {
                             style.bg(colors.accent_hover)
                         } else {
-                            style.bg(colors.hover).text_color(colors.text)
+                            style.bg(colors.hover).text_color(colors.text).border_color(colors.text.opacity(0.22))
+                        }
+                    })
+                    .active(|style| {
+                        if filled {
+                            style.bg(colors.accent_press)
+                        } else {
+                            style.bg(colors.press).text_color(colors.text).border_color(colors.text.opacity(0.4))
                         }
                     })
                     .focus(|style| style.border_color(colors.focus))

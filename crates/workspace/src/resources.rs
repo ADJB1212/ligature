@@ -1,8 +1,8 @@
 use crate::Workspace;
 use gpui::{Context, IntoElement, Task, Window, div, prelude::*};
-use ligature_theme::{colors, spacing};
+use ligature_theme::spacing;
 use ligature_toolchain::{BundleInstallProgress, BundledResources, install_upstream_bundle, installation_directory};
-use ligature_ui::{Button, caption, inline_error};
+use ligature_ui::{Button, Indicator, caption, chrome_strip, indicator, inline_error};
 use std::{
     sync::{
         Arc, Mutex,
@@ -19,6 +19,12 @@ pub(super) struct BundleUi {
     cancel: Option<Arc<AtomicBool>>,
     status: Option<String>,
     error: Option<String>,
+}
+
+impl BundleUi {
+    pub(super) fn busy(&self) -> bool {
+        self.task.is_some()
+    }
 }
 
 impl Drop for BundleUi {
@@ -113,13 +119,10 @@ impl Workspace {
     }
 
     pub(super) fn render_resources(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        chrome_strip()
             .flex()
             .flex_col()
             .gap(spacing::small())
-            .px(spacing::medium())
-            .py(spacing::small())
-            .bg(colors().chrome)
             .child(caption(
                 "The editor includes common TeX packages. Download the full upstream bundle for additional packages (about 2.9 GB).",
             ))
@@ -146,7 +149,10 @@ impl Workspace {
                                 })),
                         )
                     })
-                    .when_some(self.bundle_ui.status.clone(), |view, status| view.child(caption(status))),
+                    .when_some(self.bundle_ui.status.clone(), |view, status| {
+                        view.when(self.bundle_ui.busy(), |row| row.child(indicator("bundle-live", Indicator::Live)))
+                            .child(caption(status))
+                    }),
             )
             .when_some(self.bundle_ui.error.clone(), |view, error| view.child(inline_error(error)))
     }

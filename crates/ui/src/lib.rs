@@ -8,8 +8,9 @@ pub use button::Button;
 pub use input::TextInput;
 pub use split_pane::SplitPane;
 
-use gpui::{App, IntoElement, KeyBinding, Window, actions, div, prelude::*};
+use gpui::{Animation, AnimationExt, App, ElementId, IntoElement, KeyBinding, Window, actions, div, prelude::*, pulsating_between, px};
 use ligature_theme::{colors, spacing, typography};
+use std::time::Duration;
 
 actions!(ligature_ui, [FocusNext, FocusPrevious]);
 
@@ -28,13 +29,25 @@ pub fn focus_previous(_: &FocusPrevious, window: &mut Window, cx: &mut App) {
     window.focus_prev(cx);
 }
 
+pub fn chrome_strip() -> gpui::Div {
+    div().flex_shrink_0().px(spacing::medium()).py(spacing::small()).bg(colors().chrome)
+}
+
+pub fn hairline() -> impl IntoElement {
+    div().h(gpui::px(1.0)).w_full().flex_shrink_0().bg(colors().border)
+}
+
+pub fn vertical_seam() -> impl IntoElement {
+    div().w(gpui::px(1.0)).h_full().flex_shrink_0().bg(colors().border)
+}
+
 pub fn inline_error(message: impl Into<gpui::SharedString>) -> impl IntoElement {
     let colors = colors();
     div()
         .flex()
         .gap(spacing::medium())
-        .px(spacing::large())
-        .py(spacing::medium())
+        .px(spacing::medium())
+        .py(spacing::small())
         .bg(colors.error_surface)
         .text_color(colors.error)
         .text_size(typography::small_size())
@@ -53,4 +66,35 @@ pub fn caption(text: impl Into<gpui::SharedString>) -> impl IntoElement {
         .line_height(typography::line_height())
         .text_color(colors().muted_text)
         .child(text.into())
+}
+
+#[derive(Clone, Copy)]
+pub enum Indicator {
+    Idle,
+    Live,
+    On,
+    Alert,
+}
+
+pub fn indicator(id: impl Into<ElementId>, kind: Indicator) -> gpui::AnyElement {
+    let colors = colors();
+    let (color, pulse) = match kind {
+        Indicator::Idle => (colors.muted_text, false),
+        Indicator::Live => (colors.text, true),
+        Indicator::On => (colors.text, false),
+        Indicator::Alert => (colors.error, false),
+    };
+    let lamp = div().size(px(8.0)).rounded(px(99.0)).flex_shrink_0().bg(color);
+    if pulse {
+        lamp.with_animation(
+            id,
+            Animation::new(Duration::from_millis(1100))
+                .repeat()
+                .with_easing(pulsating_between(0.35, 1.0)),
+            |this, delta| this.opacity(delta),
+        )
+        .into_any_element()
+    } else {
+        lamp.id(id).into_any_element()
+    }
 }

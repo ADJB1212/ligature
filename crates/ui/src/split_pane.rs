@@ -70,15 +70,25 @@ impl Render for SplitPane {
                 div()
                     .id("pane-boundary")
                     .debug_selector(|| "pane-boundary".into())
+                    .group("pane-split")
                     .w(spacing::pane_boundary())
                     .h_full()
                     .flex()
                     .flex_shrink_0()
                     .justify_center()
                     .hover(|style| style.bg(colors.hover))
+                    .active(|style| style.bg(colors.press))
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
                     .on_drag(PaneDrag, |_, _, _, cx| cx.new(|_| PaneDrag))
-                    .child(div().w(gpui::px(1.0)).h_full().bg(colors.border)),
+                    .child(
+                        div()
+                            .id("pane-boundary-line")
+                            .w(gpui::px(1.0))
+                            .h_full()
+                            .bg(colors.border)
+                            .group_hover("pane-split", |style| style.w(gpui::px(2.0)).bg(colors.text))
+                            .group_active("pane-split", |style| style.w(gpui::px(2.0)).bg(colors.text)),
+                    ),
             )
             .child(
                 div()

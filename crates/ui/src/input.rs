@@ -1,8 +1,8 @@
 use std::{ops::Range, time::Duration};
 
 use gpui::{
-    App, Bounds, Context, CursorStyle, ElementInputHandler, EntityInputHandler, FocusHandle, Focusable, IntoElement, KeyDownEvent, MouseButton,
-    Pixels, Point, Render, ShapedLine, Task, TextRun, UTF16Selection, Window, canvas, div, fill, point, prelude::*, px, size,
+    App, Bounds, ColorExt, Context, CursorStyle, ElementInputHandler, EntityInputHandler, FocusHandle, Focusable, IntoElement, KeyDownEvent,
+    MouseButton, Pixels, Point, Render, ShapedLine, Task, TextRun, UTF16Selection, Window, canvas, div, fill, point, prelude::*, px, size,
 };
 use ligature_theme::{colors, spacing, typography};
 
@@ -249,8 +249,9 @@ impl Render for TextInput {
             .rounded(spacing::radius())
             .border_1()
             .border_color(colors.border)
+            .hover(|style| style.border_color(colors.focus.opacity(0.7)))
             .focus(|style| style.border_color(colors.focus))
-            .bg(colors.chrome)
+            .bg(colors.surface)
             .text_size(typography::control_size())
             .line_height(typography::line_height())
             .overflow_hidden()

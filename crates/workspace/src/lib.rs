@@ -15,12 +15,14 @@ use std::{
     path::PathBuf,
 };
 
-use gpui::{App, Context, Entity, FocusHandle, Focusable, IntoElement, KeyBinding, Render, Subscription, Task, Window, actions, div, prelude::*};
+use gpui::{
+    App, ColorExt, Context, Entity, FocusHandle, Focusable, IntoElement, KeyBinding, Render, Subscription, Task, Window, actions, div, prelude::*,
+};
 use ligature_buffer::Buffer;
 use ligature_editor::Editor;
 use ligature_fs::{FileState, FileWatcher, LoadedFile};
 use ligature_theme::{colors, spacing, typography};
-use ligature_ui::{Button, SplitPane, caption, inline_error, rule};
+use ligature_ui::{Button, Indicator, SplitPane, caption, chrome_strip, hairline, indicator, inline_error, rule, vertical_seam};
 
 use lifecycle::Intent;
 
@@ -460,32 +462,34 @@ impl Render for Workspace {
             .when(self.bundle_ui.visible, |view| view.child(self.render_resources(cx)))
             .when_some(self.error.clone(), |view, error| view.child(inline_error(error)))
             .children(self.settings_errors.iter().map(|error| inline_error(error.clone())))
-            .when(self.search.visible, |view| view.child(self.render_search(cx)))
-            .child(self.render_tabs(cx))
             .child(
                 div()
                     .flex()
                     .flex_1()
                     .min_h(gpui::px(0.0))
-                    .when(self.project.is_some(), |view| view.child(self.render_tree(cx)))
-                    .child(div().flex_1().min_w(gpui::px(0.0)).child(self.panes.clone())),
+                    .when(self.project.is_some(), |view| view.child(self.render_tree(cx)).child(vertical_seam()))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w(gpui::px(0.0))
+                            .child(self.render_tabs(cx))
+                            .when(self.search.visible, |view| view.child(self.render_search(cx)))
+                            .child(div().flex_1().min_h(gpui::px(0.0)).child(self.panes.clone())),
+                    ),
             )
-            .when(self.build_ui.visible, |view| view.child(self.render_build_output(cx)))
+            .when(self.build_ui.visible, |view| view.child(hairline()).child(self.render_build_output(cx)))
     }
 }
 
 impl Workspace {
     fn render_toolbar(&self, dirty: bool, name: &str, unavailable: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = colors();
-        div()
+        chrome_strip()
             .flex()
             .flex_wrap()
             .items_center()
             .gap(spacing::small())
-            .px(spacing::medium())
-            .py(spacing::small())
-            .flex_shrink_0()
-            .bg(colors.chrome)
             .child(
                 Button::new("new", "New")
                     .disabled(self.busy)
@@ -564,7 +568,16 @@ impl Workspace {
                     .flex()
                     .flex_1()
                     .min_w(gpui::px(0.0))
+                    .items_center()
                     .justify_end()
+                    .gap(spacing::small())
+                    .when(
+                        self.build_ui.running()
+                            || self.bundle_ui.busy()
+                            || (self.search.visible && (self.search.running || self.search.previewing || self.search.applying)),
+                        |view| view.child(indicator("toolbar-live", Indicator::Live)),
+                    )
+                    .when(dirty, |view| view.child(indicator("toolbar-dirty", Indicator::On)))
                     .child(caption(format!("{name}{}", if dirty { " *" } else { "" }))),
             )
     }
@@ -576,6 +589,7 @@ impl Workspace {
             .flex()
             .overflow_x_scroll()
             .flex_shrink_0()
+            .px(spacing::small())
             .bg(colors.chrome)
             .children(self.tabs.iter().enumerate().map(|(index, tab)| {
                 let (document, editor) = tab.as_ref().map_or_else(
@@ -584,30 +598,40 @@ impl Workspace {
                 );
                 let dirty = document.diverged || editor.read(cx).state().is_dirty();
                 let active = index == self.active_tab;
+                let group = format!("tab-{index}");
                 div()
                     .id(("tab", index))
+                    .group(group.clone())
                     .flex()
                     .flex_col()
+                    .cursor_pointer()
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .px(spacing::small())
-                            .when(active, |view| view.bg(colors.surface))
+                            .when(active, |view| view.bg(colors.background))
+                            .when(!active, |view| view.hover(|style| style.bg(colors.hover)))
                             .child(
-                                Button::new(("activate-tab", index), format!("{}{}", document.name(), if dirty { " *" } else { "" }))
+                                Button::new(("activate-tab", index), document.name())
                                     .quiet()
                                     .selected(active)
                                     .disabled(self.busy)
                                     .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(index, window, cx))),
                             )
+                            .when(dirty, |view| view.child(indicator(("dirty-tab", index), Indicator::On)))
                             .child(Button::new(("close-tab", index), "x").quiet().disabled(self.busy).on_click(cx.listener(
                                 move |this, _, window, cx| {
                                     this.start(Intent::CloseTab(index), window, cx);
                                 },
                             ))),
                     )
-                    .child(div().h(gpui::px(2.0)).bg(if active { colors.text } else { gpui::transparent_black() }))
+                    .child(
+                        div()
+                            .h(gpui::px(2.0))
+                            .bg(if active { colors.text } else { gpui::transparent_black() })
+                            .when(!active, |line| line.group_hover(group, |style| style.bg(colors.text.opacity(0.45)))),
+                    )
             }))
     }
 }

@@ -13,7 +13,7 @@ use ligature_editor::Editor;
 use ligature_fs::FileState;
 use ligature_search::{BufferVersion, Cancellation, FileReplacement, ProjectResults, Query, ReplacementPreview, SourceSnapshot};
 use ligature_theme::{colors, spacing, typography};
-use ligature_ui::{Button, TextInput, caption, inline_error};
+use ligature_ui::{Button, Indicator, TextInput, caption, chrome_strip, indicator, inline_error};
 
 pub(super) struct SearchUi {
     pub visible: bool,
@@ -453,16 +453,11 @@ impl Workspace {
     pub(super) fn render_search(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (current, count) = self.editor.read(cx).search_status();
         let disabled = self.busy || self.document.is_none() || count == 0;
-        let colors = colors();
-        div()
+        chrome_strip()
             .key_context("LigatureSearch")
             .flex()
             .flex_col()
-            .flex_shrink_0()
             .gap(spacing::small())
-            .px(spacing::medium())
-            .py(spacing::medium())
-            .bg(colors.chrome)
             .when_some(self.search.error.clone(), |view, error| view.child(inline_error(error)))
             .child(
                 div()
@@ -541,6 +536,9 @@ impl Workspace {
                         .flex_wrap()
                         .items_center()
                         .gap(spacing::small())
+                        .when(self.search.applying || self.search.previewing || self.search.running, |view| {
+                            view.child(indicator("project-search-live", Indicator::Live))
+                        })
                         .child(caption(if self.search.applying {
                             "Applying replacements...".to_owned()
                         } else if self.search.previewing {

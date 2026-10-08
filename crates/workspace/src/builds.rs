@@ -3,9 +3,9 @@ use gpui::{App, AsyncWindowContext, Context, IntoElement, Task, WeakEntity, Wind
 use ligature_buffer::DocumentId;
 use ligature_build::{BuildArtifacts, BuildJob, BuildPreparation, BuildRequest, BuildSnapshot, BuildState, TemporarySource, TextBuild};
 use ligature_diagnostics::{Diagnostic, Severity, grouped};
-use ligature_theme::{colors, spacing};
+use ligature_theme::spacing;
 use ligature_toolchain::BundledResources;
-use ligature_ui::{Button, caption, inline_error};
+use ligature_ui::{Button, Indicator, caption, chrome_strip, indicator, inline_error};
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Duration};
 
 #[derive(Default)]
@@ -401,15 +401,26 @@ impl Workspace {
                 index += 1;
             }
         }
-        div()
+        chrome_strip()
             .flex()
             .flex_col()
-            .flex_shrink_0()
             .gap(spacing::small())
-            .px(spacing::medium())
-            .py(spacing::small())
-            .bg(colors().chrome)
-            .child(caption(format!("{status} - {errors} errors, {warnings} warnings")))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(spacing::small())
+                    .child(indicator(
+                        "build-status",
+                        match snapshot.state {
+                            BuildState::Running => Indicator::Live,
+                            BuildState::Succeeded => Indicator::On,
+                            BuildState::Failed => Indicator::Alert,
+                            BuildState::Idle | BuildState::Canceled => Indicator::Idle,
+                        },
+                    ))
+                    .child(caption(format!("{status} - {errors} errors, {warnings} warnings"))),
+            )
             .child(entries)
             .when_some(snapshot.failure.as_ref(), |view, failure| {
                 view.child(inline_error(failure.message.clone()))

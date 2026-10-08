@@ -10,7 +10,7 @@ use gpui::{
 use ligature_pdf::{Document, Page};
 use ligature_synctex::{Mapping, PdfPosition, SourcePosition};
 use ligature_theme::{colors, spacing};
-use ligature_ui::{Button, TextInput, caption, inline_error};
+use ligature_ui::{Button, Indicator, TextInput, caption, chrome_strip, indicator, inline_error};
 use state::{Cache, RenderKey, accepts, zoom_anchor};
 use std::{path::PathBuf, sync::Arc};
 
@@ -412,11 +412,36 @@ impl Render for Preview {
         let entity = cx.entity();
         let paint_entity = entity.clone();
         let count = self.document.as_ref().map_or(0, |document| document.pages().len());
+        let live = self.load_task.is_some() || self.render_task.is_some();
+        let status = if count == 0 {
+            if self.load_task.is_some() {
+                "Loading PDF..."
+            } else {
+                "No compiled document."
+            }
+        } else if self.stale || self.load_failed {
+            "Preview is older than the source."
+        } else if self.load_task.is_some() {
+            "Reloading PDF..."
+        } else if self.render_task.is_some() {
+            "Rendering page..."
+        } else {
+            "Cmd-click a page to reveal its source."
+        };
+        let status_kind = if live {
+            Indicator::Live
+        } else if self.stale || self.load_failed {
+            Indicator::Alert
+        } else if count > 0 {
+            Indicator::On
+        } else {
+            Indicator::Idle
+        };
         div()
             .size_full()
             .flex()
             .flex_col()
-            .bg(colors().chrome)
+            .bg(colors().background)
             .key_context("LigaturePreview")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &NextPage, _, cx| this.go_to(this.page + 1, cx)))
@@ -426,12 +451,11 @@ impl Render for Preview {
             .on_action(cx.listener(|this, _: &FitWidth, _, cx| this.set_zoom(Zoom::FitWidth, cx)))
             .on_action(cx.listener(|this, _: &FitPage, _, cx| this.set_zoom(Zoom::FitPage, cx)))
             .child(
-                div()
+                chrome_strip()
                     .flex()
                     .flex_wrap()
                     .items_center()
                     .gap(spacing::small())
-                    .p(spacing::small())
                     .child(
                         Button::new("prev-page", "<")
                             .disabled(count == 0 || self.page == 0)
@@ -482,22 +506,20 @@ impl Render for Preview {
                             .selected(self.zoom == Zoom::FitPage)
                             .disabled(count == 0)
                             .on_click(cx.listener(|this, _, _, cx| this.set_zoom(Zoom::FitPage, cx))),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .items_center()
+                            .justify_end()
+                            .gap(spacing::small())
+                            .child(indicator("preview-status", status_kind))
+                            .child(caption(status)),
                     ),
             )
-            .when((self.stale || self.load_failed) && count > 0, |view| {
-                view.child(caption("Preview is older than the source."))
-            })
-            .when(count > 0 && self.load_task.is_some(), |view| view.child(caption("Reloading PDF...")))
-            .when(count > 0 && self.render_task.is_some(), |view| view.child(caption("Rendering page...")))
             .when_some(self.error.clone(), |view, error| view.child(inline_error(error)))
-            .when(count == 0, |view| {
-                view.child(caption(if self.load_task.is_some() {
-                    "Loading PDF..."
-                } else {
-                    "No compiled document."
-                }))
-            })
-            .when(count > 0, |view| view.child(caption("Cmd-click a page to reveal its source.")))
             .child(
                 div()
                     .flex_1()
