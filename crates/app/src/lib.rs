@@ -2,7 +2,7 @@
 
 use gpui::{App, Bounds, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOptions, prelude::*, px, size};
 use ligature_core::APP_NAME;
-use ligature_workspace::{Close, New, NextTab, Open, OpenProject, PreviousTab, Quit, Save, SaveAs, SelectRoot, Workspace};
+use ligature_workspace::{Close, New, NextTab, Open, OpenProject, PreviousTab, Quit, Save, SaveAs, SelectRoot, ToggleBuildOutput, Workspace};
 use ligature_workspace::{Find, FindInProject, FindNext, FindPrevious, Replace};
 
 /// Start the native event loop and open the workspace window.
@@ -32,7 +32,12 @@ pub fn run() {
                 MenuItem::separator(),
                 MenuItem::action("Set Active Document as Project Root", SelectRoot),
             ]),
-            Menu::new("Window").items([MenuItem::action("Next Tab", NextTab), MenuItem::action("Previous Tab", PreviousTab)]),
+            Menu::new("Window").items([
+                MenuItem::action("Next Tab", NextTab),
+                MenuItem::action("Previous Tab", PreviousTab),
+                MenuItem::separator(),
+                MenuItem::action("Toggle Build Output", ToggleBuildOutput),
+            ]),
             Menu::new("Search").items([
                 MenuItem::action("Find...", Find),
                 MenuItem::action("Replace...", Replace),

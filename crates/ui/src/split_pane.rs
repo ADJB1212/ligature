@@ -1,4 +1,4 @@
-use gpui::{AnyView, Context, DragMoveEvent, IntoElement, Render, Window, div, prelude::*, px, relative};
+use gpui::{AnyView, App, Context, DragMoveEvent, IntoElement, Render, Window, div, prelude::*, px, relative};
 use ligature_theme::{colors, spacing};
 
 const MIN_PANE_WIDTH: f32 = 200.0;
@@ -44,61 +44,79 @@ fn resized_ratio(position: f32, width: f32, boundary: f32) -> f32 {
 
 impl Render for SplitPane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = colors();
-        div()
-            .id("split-pane")
-            .size_full()
-            .flex()
-            .overflow_hidden()
-            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<PaneDrag>, _, cx| {
-                this.ratio = resized_ratio(
-                    f32::from(event.event.position.x - event.bounds.left()),
-                    f32::from(event.bounds.size.width),
-                    f32::from(spacing::pane_boundary()),
-                );
+        split_pane(
+            self.leading.clone(),
+            self.trailing.clone(),
+            self.ratio,
+            cx.listener(|this, ratio: &f32, _, cx| {
+                this.ratio = *ratio;
                 cx.notify();
-            }))
-            .child(
-                div()
-                    .w(relative(self.ratio))
-                    .min_w(px(MIN_PANE_WIDTH))
-                    .h_full()
-                    .overflow_hidden()
-                    .child(self.leading.clone()),
-            )
-            .child(
-                div()
-                    .id("pane-boundary")
-                    .debug_selector(|| "pane-boundary".into())
-                    .group("pane-split")
-                    .w(spacing::pane_boundary())
-                    .h_full()
-                    .flex()
-                    .flex_shrink_0()
-                    .justify_center()
-                    .hover(|style| style.bg(colors.hover))
-                    .active(|style| style.bg(colors.press))
-                    .cursor(gpui::CursorStyle::ResizeLeftRight)
-                    .on_drag(PaneDrag, |_, _, _, cx| cx.new(|_| PaneDrag))
-                    .child(
-                        div()
-                            .id("pane-boundary-line")
-                            .w(gpui::px(1.0))
-                            .h_full()
-                            .bg(colors.border)
-                            .group_hover("pane-split", |style| style.w(gpui::px(2.0)).bg(colors.text))
-                            .group_active("pane-split", |style| style.w(gpui::px(2.0)).bg(colors.text)),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(MIN_PANE_WIDTH))
-                    .h_full()
-                    .overflow_hidden()
-                    .child(self.trailing.clone()),
-            )
+            }),
+        )
     }
+}
+
+pub fn split_pane(
+    leading: impl IntoElement, trailing: impl IntoElement, ratio: f32, on_resize: impl Fn(&f32, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let colors = colors();
+    div()
+        .id("split-pane")
+        .size_full()
+        .flex()
+        .overflow_hidden()
+        .on_drag_move(move |event: &DragMoveEvent<PaneDrag>, window, cx| {
+            let ratio = resized_ratio(
+                f32::from(event.event.position.x - event.bounds.left()),
+                f32::from(event.bounds.size.width),
+                f32::from(spacing::pane_boundary()),
+            );
+            on_resize(&ratio, window, cx);
+        })
+        .child(
+            div()
+                .id("leading-pane")
+                .debug_selector(|| "leading-pane".into())
+                .w(relative(ratio))
+                .min_w(px(MIN_PANE_WIDTH))
+                .h_full()
+                .overflow_hidden()
+                .child(leading),
+        )
+        .child(
+            div()
+                .id("pane-boundary")
+                .debug_selector(|| "pane-boundary".into())
+                .group("pane-split")
+                .w(spacing::pane_boundary())
+                .h_full()
+                .flex()
+                .flex_shrink_0()
+                .justify_center()
+                .hover(|style| style.bg(colors.hover))
+                .active(|style| style.bg(colors.press))
+                .cursor(gpui::CursorStyle::ResizeLeftRight)
+                .on_drag(PaneDrag, |_, _, _, cx| cx.new(|_| PaneDrag))
+                .child(
+                    div()
+                        .id("pane-boundary-line")
+                        .w(gpui::px(1.0))
+                        .h_full()
+                        .bg(colors.border)
+                        .group_hover("pane-split", |style| style.w(gpui::px(2.0)).bg(colors.text))
+                        .group_active("pane-split", |style| style.w(gpui::px(2.0)).bg(colors.text)),
+                ),
+        )
+        .child(
+            div()
+                .id("trailing-pane")
+                .debug_selector(|| "trailing-pane".into())
+                .flex_1()
+                .min_w(px(MIN_PANE_WIDTH))
+                .h_full()
+                .overflow_hidden()
+                .child(trailing),
+        )
 }
 
 #[cfg(test)]

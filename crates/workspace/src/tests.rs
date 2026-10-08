@@ -60,6 +60,74 @@ fn open(cx: &mut TestAppContext, window: WindowHandle<Workspace>, path: &Path) {
 }
 
 #[test]
+fn showing_and_resizing_build_output_preserves_the_pdf_preview_bounds() {
+    let mut app = TestAppContext::single();
+    let (window, _) = workspace(&mut app);
+    let mut cx = gpui::VisualTestContext::from_window(window.into(), &app);
+    cx.simulate_resize(gpui::size(px(1200.0), px(800.0)));
+    cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    let preview = cx.debug_bounds("trailing-pane").unwrap();
+    let shortcut = if cfg!(target_os = "macos") { "cmd-j" } else { "ctrl-j" };
+    cx.simulate_keystrokes(shortcut);
+    cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    assert_eq!(cx.debug_bounds("trailing-pane").unwrap(), preview);
+    let panel = cx.debug_bounds("bottom-pane-content").unwrap();
+    let editor = cx.debug_bounds("leading-pane").unwrap();
+    assert_eq!(panel.left(), editor.left());
+    assert_eq!(panel.right(), editor.right());
+    assert_eq!(panel.bottom(), editor.bottom());
+    let start = cx.debug_bounds("bottom-pane-boundary").unwrap().center();
+    let target = gpui::point(start.x, start.y - px(100.0));
+    cx.simulate_mouse_down(start, gpui::MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(gpui::point(start.x, start.y - px(10.0)), gpui::MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(target, gpui::MouseButton::Left, Default::default());
+    cx.simulate_mouse_up(target, gpui::MouseButton::Left, Default::default());
+    cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    assert!(cx.debug_bounds("bottom-pane-content").unwrap().size.height > panel.size.height);
+    assert_eq!(cx.debug_bounds("trailing-pane").unwrap(), preview);
+    cx.simulate_keystrokes(shortcut);
+    cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    assert_eq!(cx.debug_bounds("trailing-pane").unwrap(), preview);
+    assert!(cx.debug_bounds("bottom-pane-content").is_none());
+}
+
+#[test]
+fn build_output_shortcut_preserves_height_and_restores_focus_when_hidden() {
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    let shortcut = if cfg!(target_os = "macos") { "cmd-j" } else { "ctrl-j" };
+    cx.simulate_keystrokes(window.into(), shortcut);
+    assert!(root.read_with(&cx, |workspace, _| workspace.build_ui.visible));
+    cx.update_window(window.into(), |_, window, cx| {
+        root.update(cx, |workspace, cx| {
+            workspace.build_output_height = px(180.0);
+            window.focus(&workspace.build_log.focus_handle(cx), cx);
+        });
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    cx.simulate_keystrokes(window.into(), shortcut);
+    assert!(!root.read_with(&cx, |workspace, _| workspace.build_ui.visible));
+    cx.update_window(window.into(), |_, window, cx| {
+        assert!(root.read(cx).editor.focus_handle(cx).is_focused(window));
+    })
+    .unwrap();
+    cx.simulate_keystrokes(window.into(), shortcut);
+    root.read_with(&cx, |workspace, _| {
+        assert!(workspace.build_ui.visible);
+        assert_eq!(workspace.build_output_height, px(180.0));
+    });
+}
+
+#[test]
 fn startup_and_new_documents_have_a_clean_latex_template() {
     let mut cx = TestAppContext::single();
     let (window, root) = workspace_with_template(&mut cx);

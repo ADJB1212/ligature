@@ -332,8 +332,9 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn render_build_output(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_build_output(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let snapshot = &self.build_ui.snapshot;
+        self.build_log.update(cx, |log, cx| log.set_read_only_text(&snapshot.output, cx));
         let status = match snapshot.state {
             BuildState::Idle => "No build yet",
             BuildState::Running => "Building...",
@@ -353,13 +354,7 @@ impl Workspace {
             .iter()
             .filter(|diagnostic| diagnostic.severity == Severity::Warning)
             .count();
-        let mut entries = div()
-            .id("build-diagnostics")
-            .max_h(gpui::px(180.0))
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap(spacing::small());
+        let mut entries = div().id("build-diagnostics").flex().flex_col().flex_shrink_0().gap(spacing::small());
         let mut index = 0_usize;
         for ((path, severity), diagnostics) in grouped(&self.build_ui.diagnostics) {
             let name = path.as_ref().map_or_else(
@@ -401,13 +396,39 @@ impl Workspace {
                 index += 1;
             }
         }
+        let details = div()
+            .id("build-details")
+            .max_h(gpui::relative(0.45))
+            .overflow_y_scroll()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(spacing::small())
+            .child(entries)
+            .when_some(snapshot.failure.as_ref(), |view, failure| {
+                view.child(div().flex_shrink_0().child(inline_error(failure.message.clone())))
+            })
+            .when_some(self.build_ui.last_success.as_ref(), |view, artifacts| {
+                let name = if artifacts.temporary_source.is_some() {
+                    "Untitled.pdf".into()
+                } else {
+                    artifacts.pdf.display().to_string()
+                };
+                view.child(div().flex_shrink_0().child(caption(format!("Last successful PDF: {name}"))))
+            })
+            .when(snapshot.truncated, |view| {
+                view.child(div().flex_shrink_0().child(caption("Earlier output omitted.")))
+            });
         chrome_strip()
+            .size_full()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .gap(spacing::small())
             .child(
                 div()
                     .flex()
+                    .flex_shrink_0()
                     .items_center()
                     .gap(spacing::small())
                     .child(indicator(
@@ -419,27 +440,30 @@ impl Workspace {
                             BuildState::Idle | BuildState::Canceled => Indicator::Idle,
                         },
                     ))
-                    .child(caption(format!("{status} - {errors} errors, {warnings} warnings"))),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(gpui::px(0.0))
+                            .overflow_hidden()
+                            .child(caption(format!("{status} - {errors} errors, {warnings} warnings"))),
+                    )
+                    .child(
+                        Button::new(
+                            "hide-build-output",
+                            if cfg!(target_os = "macos") { "Hide (Cmd+J)" } else { "Hide (Ctrl+J)" },
+                        )
+                        .quiet()
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_build_output(window, cx))),
+                    ),
             )
-            .child(entries)
-            .when_some(snapshot.failure.as_ref(), |view, failure| {
-                view.child(inline_error(failure.message.clone()))
-            })
-            .when_some(self.build_ui.last_success.as_ref(), |view, artifacts| {
-                let name = if artifacts.temporary_source.is_some() {
-                    "Untitled.pdf".into()
-                } else {
-                    artifacts.pdf.display().to_string()
-                };
-                view.child(caption(format!("Last successful PDF: {name}")))
-            })
-            .when(snapshot.truncated, |view| view.child(caption("Earlier output omitted.")))
+            .child(details)
             .child(
                 div()
                     .id("build-log")
-                    .max_h(gpui::px(180.0))
-                    .overflow_y_scroll()
-                    .child(snapshot.output.clone()),
+                    .flex_1()
+                    .min_h(gpui::px(0.0))
+                    .overflow_hidden()
+                    .child(self.build_log.clone()),
             )
     }
 }
@@ -448,6 +472,46 @@ impl Workspace {
 mod diagnostic_tests {
     use super::*;
     use ligature_diagnostics::{BuildId, Provider};
+
+    #[test]
+    fn log_selection_survives_live_output_and_hiding_the_panel() {
+        use gpui::{AppContext, TestAppContext};
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(Workspace::new);
+        let root = window.root(&mut cx).unwrap();
+        cx.update_window(window.into(), |_, window, cx| {
+            root.update(cx, |workspace, cx| {
+                workspace.build_ui.visible = true;
+                workspace.build_ui.snapshot.output = "first\nsecond".into();
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            root.update(cx, |workspace, cx| {
+                assert_eq!(workspace.build_log.read(cx).state().text(), "first\nsecond");
+                workspace
+                    .build_log
+                    .update(cx, |log, cx| log.update_state(|state| state.select(6, 12), cx));
+                workspace.build_ui.snapshot.output.push_str("\nthird");
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            root.update(cx, |workspace, cx| {
+                assert_eq!(workspace.build_log.read(cx).state().selected_text(), "second");
+                workspace.toggle_build_output(window, cx);
+                workspace.build_ui.snapshot.output.push_str("\nfourth");
+            });
+            window.draw(cx).clear(cx);
+            root.update(cx, |workspace, cx| workspace.toggle_build_output(window, cx));
+            window.draw(cx).clear(cx);
+            root.read_with(cx, |workspace, cx| {
+                assert_eq!(workspace.build_log.read(cx).state().text(), "first\nsecond\nthird\nfourth");
+                assert_eq!(workspace.build_log.read(cx).state().selected_text(), "second");
+                assert!(!workspace.build_log.read(cx).state().is_dirty());
+                assert_eq!(workspace.editor.read(cx).state().text(), crate::NEW_DOCUMENT);
+            });
+        })
+        .unwrap();
+    }
 
     #[test]
     fn diagnostic_staleness_tracks_edits_and_undo_against_the_producing_build() {

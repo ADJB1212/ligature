@@ -16,13 +16,14 @@ use std::{
 };
 
 use gpui::{
-    App, ColorExt, Context, Entity, FocusHandle, Focusable, IntoElement, KeyBinding, Render, Subscription, Task, Window, actions, div, prelude::*,
+    App, ColorExt, Context, Entity, FocusHandle, Focusable, IntoElement, KeyBinding, Pixels, Render, Subscription, Task, Window, actions, div,
+    prelude::*, px,
 };
 use ligature_buffer::Buffer;
 use ligature_editor::Editor;
 use ligature_fs::{FileState, FileWatcher, LoadedFile};
 use ligature_theme::{colors, spacing, typography};
-use ligature_ui::{Button, Indicator, SplitPane, caption, chrome_strip, hairline, indicator, inline_error, rule, vertical_seam};
+use ligature_ui::{Button, Indicator, bottom_pane, caption, chrome_strip, indicator, inline_error, rule, split_pane, vertical_seam};
 
 use lifecycle::Intent;
 
@@ -49,7 +50,8 @@ actions!(
         HideSearch,
         Build,
         CancelBuild,
-        ShowInPreview
+        ShowInPreview,
+        ToggleBuildOutput
     ]
 );
 
@@ -79,6 +81,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(&format!("{modifier}-b"), Build, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-shift-b"), CancelBuild, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-shift-j"), ShowInPreview, Some("LigatureWorkspace")),
+        KeyBinding::new(&format!("{modifier}-j"), ToggleBuildOutput, Some("LigatureWorkspace")),
     ]);
 }
 
@@ -108,7 +111,7 @@ impl Document {
 pub struct Workspace {
     focus: FocusHandle,
     editor: Entity<Editor>,
-    panes: Entity<SplitPane>,
+    pane_ratio: f32,
     preview: Entity<ligature_preview::Preview>,
     _preview_subscription: Subscription,
     document: Option<Document>,
@@ -131,6 +134,8 @@ pub struct Workspace {
     search: search::SearchUi,
     bundle_ui: resources::BundleUi,
     build_ui: builds::BuildUi,
+    build_log: Entity<Editor>,
+    build_output_height: Pixels,
 }
 
 struct Tab {
@@ -144,9 +149,13 @@ struct Tab {
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| Editor::new(Buffer::from_text(NEW_DOCUMENT), cx));
+        let build_log = cx.new(|cx| {
+            let mut log = Editor::read_only(Buffer::new(), cx);
+            log.set_font(None, typography::control_size(), cx);
+            log
+        });
         window.focus(&editor.focus_handle(cx), cx);
         let preview = cx.new(ligature_preview::Preview::new);
-        let panes = cx.new(|_| SplitPane::new(editor.clone().into(), preview.clone().into()));
         let preview_subscription = cx.subscribe_in(
             &preview,
             window,
@@ -164,7 +173,7 @@ impl Workspace {
         Self {
             focus: cx.focus_handle(),
             editor,
-            panes,
+            pane_ratio: 0.5,
             preview,
             _preview_subscription: preview_subscription,
             document: Some(Document::untitled()),
@@ -187,6 +196,8 @@ impl Workspace {
             search,
             bundle_ui: resources::BundleUi::default(),
             build_ui: builds::BuildUi::default(),
+            build_log,
+            build_output_height: px(240.0),
         }
     }
 
@@ -241,8 +252,6 @@ impl Workspace {
         self.editor = cx.new(|cx| Editor::new(Buffer::from_text(text), cx));
         self._editor_subscription = cx.observe(&self.editor, |workspace, _, cx| workspace.editor_changed(cx));
         self.configure_active_editor(cx);
-        let editor = self.editor.clone().into();
-        self.panes.update(cx, |panes, cx| panes.set_leading(editor, cx));
         self.start_watching(window, cx);
         self.focus_editor(window, cx);
         self.update_membership();
@@ -262,8 +271,6 @@ impl Workspace {
             self.update_membership();
             return;
         }
-        let empty = cx.new(|_| EmptyEditor);
-        self.panes.update(cx, |panes, cx| panes.set_leading(empty.into(), cx));
         self.update_membership();
         self.search_sources_changed(cx);
         self.refresh_preview_staleness(cx);
@@ -290,8 +297,6 @@ impl Workspace {
         self.watch_task = tab.watch_task;
         self.external_pending = tab.external_pending;
         self._editor_subscription = cx.observe(&self.editor, |workspace, _, cx| workspace.editor_changed(cx));
-        let editor = self.editor.clone().into();
-        self.panes.update(cx, |panes, cx| panes.set_leading(editor, cx));
         self.focus_editor(window, cx);
         self.editor_changed(cx);
         cx.notify();
@@ -448,6 +453,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &Build, window, cx| this.start_build(window, cx)))
             .on_action(cx.listener(|this, _: &CancelBuild, _, cx| this.cancel_build(cx)))
             .on_action(cx.listener(|this, _: &ShowInPreview, _, cx| this.show_in_preview(cx)))
+            .on_action(cx.listener(|this, _: &ToggleBuildOutput, window, cx| this.toggle_build_output(window, cx)))
             .when(!unavailable, |view| {
                 view.on_action(cx.listener(|this, _: &Find, window, cx| this.show_search(false, false, window, cx)))
                     .on_action(cx.listener(|this, _: &Replace, window, cx| this.show_search(false, true, window, cx)))
@@ -464,28 +470,60 @@ impl Render for Workspace {
             .when(self.bundle_ui.visible, |view| view.child(self.render_resources(cx)))
             .when_some(self.error.clone(), |view, error| view.child(inline_error(error)))
             .children(self.settings_errors.iter().map(|error| inline_error(error.clone())))
-            .child(
+            .child({
+                let editor = if self.document.is_some() {
+                    self.editor.clone().into_any_element()
+                } else {
+                    empty_editor().into_any_element()
+                };
+                let editor = if self.build_ui.visible {
+                    bottom_pane(
+                        editor,
+                        self.render_build_output(cx),
+                        self.build_output_height,
+                        cx.listener(|this, height: &Pixels, _, cx| {
+                            this.build_output_height = *height;
+                            cx.notify();
+                        }),
+                    )
+                    .into_any_element()
+                } else {
+                    editor
+                };
+                let editor_pane = div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(self.render_tabs(cx))
+                    .when(self.search.visible, |view| view.child(self.render_search(cx)))
+                    .child(div().flex().flex_col().flex_1().min_h(px(0.0)).child(editor));
                 div()
                     .flex()
                     .flex_1()
                     .min_h(gpui::px(0.0))
                     .when(self.project.is_some(), |view| view.child(self.render_tree(cx)).child(vertical_seam()))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w(gpui::px(0.0))
-                            .child(self.render_tabs(cx))
-                            .when(self.search.visible, |view| view.child(self.render_search(cx)))
-                            .child(div().flex_1().min_h(gpui::px(0.0)).child(self.panes.clone())),
-                    ),
-            )
-            .when(self.build_ui.visible, |view| view.child(hairline()).child(self.render_build_output(cx)))
+                    .child(div().flex_1().min_w(gpui::px(0.0)).child(split_pane(
+                        editor_pane,
+                        self.preview.clone(),
+                        self.pane_ratio,
+                        cx.listener(|this, ratio: &f32, _, cx| {
+                            this.pane_ratio = *ratio;
+                            cx.notify();
+                        }),
+                    )))
+            })
     }
 }
 
 impl Workspace {
+    fn toggle_build_output(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.build_ui.visible = !self.build_ui.visible;
+        if !self.build_ui.visible && self.build_log.focus_handle(cx).is_focused(window) {
+            self.focus_editor(window, cx);
+        }
+        cx.notify();
+    }
+
     fn render_toolbar(&self, dirty: bool, name: &str, unavailable: bool, cx: &mut Context<Self>) -> impl IntoElement {
         chrome_strip()
             .flex()
@@ -552,10 +590,7 @@ impl Workspace {
             .child(
                 Button::new("build-output", "Build Output")
                     .selected(self.build_ui.visible)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.build_ui.visible = !this.build_ui.visible;
-                        cx.notify();
-                    })),
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_build_output(window, cx))),
             )
             .child(
                 Button::new("tex-resources", "TeX Resources")
@@ -638,19 +673,16 @@ impl Workspace {
     }
 }
 
-struct EmptyEditor;
-impl Render for EmptyEditor {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = colors();
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(spacing::small())
-            .bg(colors.background)
-            .child(caption("DOCUMENT"))
-            .child("Create or open a TeX file.")
-    }
+fn empty_editor() -> impl IntoElement {
+    let colors = colors();
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(spacing::small())
+        .bg(colors.background)
+        .child(caption("DOCUMENT"))
+        .child("Create or open a TeX file.")
 }

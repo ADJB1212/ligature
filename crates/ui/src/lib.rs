@@ -1,12 +1,14 @@
 //! Reusable GPUI controls such as buttons, inputs, menus, and panels. Feature views belong to their own crates.
 
+mod bottom_pane;
 mod button;
 mod input;
 mod split_pane;
 
+pub use bottom_pane::bottom_pane;
 pub use button::Button;
 pub use input::TextInput;
-pub use split_pane::SplitPane;
+pub use split_pane::{SplitPane, split_pane};
 
 use gpui::{Animation, AnimationExt, App, ElementId, IntoElement, KeyBinding, Window, actions, div, prelude::*, pulsating_between, px};
 use ligature_theme::{colors, spacing, typography};

@@ -32,6 +32,7 @@ pub fn init(cx: &mut App) {
 
 pub struct Editor {
     state: EditorState,
+    read_only: bool,
     focus: FocusHandle,
     bounds: Bounds<Pixels>,
     scroll: Point<Pixels>,
@@ -59,6 +60,7 @@ impl Editor {
     pub fn new(buffer: Buffer, cx: &mut Context<Self>) -> Self {
         Self {
             state: EditorState::new(buffer),
+            read_only: false,
             focus: cx.focus_handle().tab_stop(true),
             bounds: Bounds::default(),
             scroll: point(px(0.0), px(0.0)),
@@ -83,8 +85,24 @@ impl Editor {
         }
     }
 
+    pub fn read_only(buffer: Buffer, cx: &mut Context<Self>) -> Self {
+        Self {
+            read_only: true,
+            ..Self::new(buffer, cx)
+        }
+    }
+
     pub fn state(&self) -> &EditorState {
         &self.state
+    }
+
+    pub fn set_read_only_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        assert!(self.read_only);
+        if self.state.text() != text {
+            self.state.reload(text.to_owned());
+            self.preferred_x = None;
+            cx.notify();
+        }
     }
 
     pub fn set_diagnostics(&mut self, diagnostics: &[ligature_diagnostics::Diagnostic], stale: bool, cx: &mut Context<Self>) {
@@ -187,6 +205,9 @@ impl Editor {
     }
 
     pub fn replace_match(&mut self, replacement: &str, all: bool, cx: &mut Context<Self>) -> usize {
+        if self.read_only {
+            return 0;
+        }
         self.state.commit_composition();
         self.refresh_search();
         let matches = if all {
@@ -224,6 +245,9 @@ impl Editor {
     }
 
     fn restart_blink(&mut self, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         self.caret_on = true;
         self.blink_epoch += 1;
         let epoch = self.blink_epoch;
@@ -306,6 +330,9 @@ impl Editor {
                     self.state.move_cursor(movement, modifiers.shift);
                 }
             } else {
+                if self.read_only {
+                    return;
+                }
                 if modifiers.control || modifiers.platform || modifiers.alt {
                     return;
                 }
@@ -456,6 +483,10 @@ impl Editor {
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            cx.stop_propagation();
+            return;
+        }
         if let Some(text) = self.state.cut() {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
@@ -464,6 +495,10 @@ impl Editor {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            cx.stop_propagation();
+            return;
+        }
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             self.state.insert(&text, false);
         }
@@ -472,12 +507,20 @@ impl Editor {
     }
 
     fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            cx.stop_propagation();
+            return;
+        }
         self.state.undo();
         self.preferred_x = None;
         self.changed(window, cx);
     }
 
     fn redo(&mut self, _: &Redo, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            cx.stop_propagation();
+            return;
+        }
         self.state.redo();
         self.preferred_x = None;
         self.changed(window, cx);
@@ -544,6 +587,9 @@ impl EntityInputHandler for Editor {
     }
 
     fn replace_text_in_range(&mut self, range: Option<Range<usize>>, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         let range = range.map(|range| self.byte_range(range));
         self.state.commit_text(range, text);
         self.preferred_x = None;
@@ -553,6 +599,9 @@ impl EntityInputHandler for Editor {
     fn replace_and_mark_text_in_range(
         &mut self, range: Option<Range<usize>>, text: &str, selected: Option<Range<usize>>, window: &mut Window, cx: &mut Context<Self>,
     ) {
+        if self.read_only {
+            return;
+        }
         let range = range.map(|range| self.byte_range(range));
         self.state.mark(range, text, selected);
         self.preferred_x = None;
@@ -596,7 +645,11 @@ impl Editor {
         self.bounds = bounds;
         self.font = Some(window.text_style().font());
         let digits = self.state.line_count().to_string();
-        self.gutter = self.shape_text(digits.into(), window, true).width + px(24.0);
+        self.gutter = if self.read_only {
+            px(8.0)
+        } else {
+            self.shape_text(digits.into(), window, true).width + px(24.0)
+        };
         let caret_line = self.state.line_index(self.state.caret());
         let caret = self.shape(caret_line, window);
         let caret_width = caret.width;
@@ -649,7 +702,7 @@ impl Editor {
                     text_bounds.left() - self.scroll.x,
                     self.bounds.top() + self.line_height * *index as f32 - self.scroll.y,
                 );
-                if *index == caret_line {
+                if *index == caret_line && !self.read_only {
                     window.paint_quad(fill(
                         Bounds::new(point(text_bounds.left(), origin.y), size(text_bounds.size.width, self.line_height)),
                         colors.current_line,
@@ -717,7 +770,7 @@ impl Editor {
                         colors.text,
                     ));
                 }
-                if *index == caret_line && self.focus.is_focused(window) && self.caret_on {
+                if *index == caret_line && !self.read_only && self.focus.is_focused(window) && self.caret_on {
                     window.paint_quad(fill(
                         Bounds::new(
                             point(origin.x + line.x_for_byte(self.state.caret()), origin.y),
@@ -728,6 +781,9 @@ impl Editor {
                 }
             }
         });
+        if self.read_only {
+            return;
+        }
         window.with_content_mask(Some(gpui::ContentMask { bounds: self.bounds }), |window| {
             window.paint_quad(fill(
                 Bounds::new(self.bounds.origin, size(self.gutter, self.bounds.size.height)),
@@ -805,7 +861,9 @@ impl Render for Editor {
                             }
                         });
                         paint_entity.update(cx, |editor, cx| {
-                            window.handle_input(&editor.focus, ElementInputHandler::new(bounds, paint_entity.clone()), cx);
+                            if !editor.read_only {
+                                window.handle_input(&editor.focus, ElementInputHandler::new(bounds, paint_entity.clone()), cx);
+                            }
                             editor.paint(lines, window, cx);
                         });
                     },
@@ -820,6 +878,79 @@ mod tests {
     use super::*;
     use gpui::{AppContext, TestAppContext};
     use ligature_buffer::Buffer;
+
+    #[test]
+    fn read_only_text_can_be_selected_and_copied_but_cannot_be_edited() {
+        let mut cx = TestAppContext::single();
+        cx.update(init);
+        let window = cx.add_window(|_, cx| Editor::read_only(Buffer::from_text("alpha\nbeta"), cx));
+        let editor = window.root(&mut cx).unwrap();
+        editor.update(&mut cx, |editor, cx| {
+            editor.update_state(
+                |state| {
+                    state.insert("log ", false);
+                    state.insert("unused", false);
+                    state.undo();
+                },
+                cx,
+            );
+        });
+        cx.update_window(window.into(), |_, window, cx| {
+            window.focus(&editor.focus_handle(cx), cx);
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+        let modifier = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
+        cx.simulate_keystrokes(window.into(), &format!("{modifier}-a {modifier}-c"));
+        let expected = "log alpha\nbeta";
+        assert_eq!(editor.read_with(&cx, |editor, _| editor.state.selected_text().to_owned()), expected);
+        assert_eq!(
+            cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text())).as_deref(),
+            Some(expected)
+        );
+        for key in [
+            "backspace".to_owned(),
+            "delete".to_owned(),
+            "enter".to_owned(),
+            "tab".to_owned(),
+            format!("{modifier}-x"),
+            format!("{modifier}-v"),
+            format!("{modifier}-z"),
+            format!("{modifier}-shift-z"),
+        ] {
+            cx.simulate_keystrokes(window.into(), &key);
+            assert_eq!(editor.read_with(&cx, |editor, _| editor.state.text().to_owned()), expected, "{key}");
+        }
+        cx.simulate_input(window.into(), "typed");
+        assert_eq!(editor.read_with(&cx, |editor, _| editor.state.text().to_owned()), expected);
+        cx.update_window(window.into(), |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.replace_text_in_range(None, "typed", window, cx);
+                editor.replace_and_mark_text_in_range(None, "composed", Some(0..1), window, cx);
+                assert_eq!(editor.state.text(), expected);
+                assert!(editor.state.marked_range().is_none());
+            });
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn read_only_log_updates_preserve_selection_and_scroll() {
+        let mut cx = TestAppContext::single();
+        let editor = cx.new(|cx| Editor::read_only(Buffer::from_text("first\nsecond"), cx));
+        editor.update(&mut cx, |editor, cx| {
+            editor.state.select(6, 12);
+            editor.scroll = point(px(10.0), px(20.0));
+            editor.reveal_caret = false;
+            editor.set_read_only_text("first\nsecond\nthird", cx);
+            assert_eq!(editor.state.selected_text(), "second");
+            assert_eq!(editor.scroll, point(px(10.0), px(20.0)));
+            assert!(!editor.reveal_caret);
+            assert!(!editor.state.is_dirty());
+            editor.set_read_only_text("short", cx);
+            assert_eq!(editor.state.selection(), 5..5);
+        });
+    }
 
     #[test]
     fn diagnostic_markers_follow_source_precision_and_clear_when_stale() {
