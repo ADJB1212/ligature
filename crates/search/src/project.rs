@@ -2,6 +2,7 @@ use crate::{Cancellation, Match, Query, ReplacementEdit, Search, describe_matche
 use ligature_buffer::{DocumentId, Revision};
 use ligature_fs::FileState;
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
@@ -49,8 +50,10 @@ impl ProjectResults {
             .filter_map(|file| {
                 let ranges: Vec<_> = file.matches.iter().map(|matched| matched.range.clone()).collect();
                 let edit = replacement_edit(&file.source.text, &ranges, replacement)?;
-                let mut after = file.source.text.clone();
-                after.replace_range(edit.range.clone(), &edit.text);
+                let mut after = String::with_capacity(file.source.text.len() - edit.range.len() + edit.text.len());
+                after.push_str(&file.source.text[..edit.range.start]);
+                after.push_str(&edit.text);
+                after.push_str(&file.source.text[edit.range.end..]);
                 let (mut old_offset, mut new_offset) = (0, 0);
                 let ranges = file
                     .matches
@@ -130,10 +133,10 @@ fn search_project_with(
             break;
         }
         let source = if let Some(source) = open.get(&path) {
-            source.clone()
+            Cow::Borrowed(source)
         } else {
             match read(&path) {
-                Ok(source) => source,
+                Ok(source) => Cow::Owned(source),
                 Err(error) => {
                     results.errors.insert(path, error);
                     continue;
@@ -143,7 +146,11 @@ fn search_project_with(
         let found = search.find_cancellable(&source.text, cancellation);
         if !found.is_empty() {
             let matches = describe_matches_cancellable(&source.text, found, cancellation);
-            results.files.push(FileResults { path, source, matches });
+            results.files.push(FileResults {
+                path,
+                source: source.into_owned(),
+                matches,
+            });
         }
     }
     if cancellation.is_canceled() {
@@ -166,6 +173,31 @@ pub fn apply_disk_replacement(replacement: &FileReplacement) -> Result<(), Strin
 mod tests {
     use super::*;
     use ligature_buffer::Buffer;
+
+    #[test]
+    fn replacement_preview_preserves_unicode_prefix_suffix_and_positions() {
+        let text = "猫 cat\ncat 😀";
+        let results = ProjectResults {
+            files: vec![FileResults {
+                path: "main.tex".into(),
+                source: SourceSnapshot {
+                    text: text.into(),
+                    buffer: None,
+                    disk: FileState::Present(text.as_bytes().to_vec()),
+                },
+                matches: describe_matches(text, vec![4..7, 8..11]),
+            }],
+            ..ProjectResults::default()
+        };
+        for replacement in ["", "é", "猫猫猫"] {
+            let preview = results.preview(replacement);
+            let file = &preview.files[0];
+            assert_eq!(file.after, format!("猫 {replacement}\n{replacement} 😀"));
+            assert_eq!(file.after_matches[0].range, 4..4 + replacement.len());
+            assert_eq!(file.after_matches[1].range, 5 + replacement.len()..5 + 2 * replacement.len());
+            assert_eq!((file.after_matches[1].line, file.after_matches[1].column), (2, 1));
+        }
+    }
 
     #[test]
     fn project_search_uses_unsaved_text_and_excludes_generated_and_binary_files() {

@@ -290,8 +290,9 @@ impl Editor {
             if let Some(movement) = movement {
                 if matches!(movement, Movement::Up | Movement::Down) {
                     let line = self.state.line_index(self.state.caret());
-                    let shaped = self.shape(line, window);
-                    let x = self.preferred_x.unwrap_or_else(|| shaped.x_for_byte(self.state.caret()));
+                    let x = self
+                        .preferred_x
+                        .unwrap_or_else(|| self.shape(line, window).x_for_byte(self.state.caret()));
                     let target = if matches!(movement, Movement::Up) {
                         line.saturating_sub(1)
                     } else {
@@ -598,6 +599,7 @@ impl Editor {
         self.gutter = self.shape_text(digits.into(), window, true).width + px(24.0);
         let caret_line = self.state.line_index(self.state.caret());
         let caret = self.shape(caret_line, window);
+        let caret_width = caret.width;
         let max_y = (self.line_height * self.state.line_count() as f32 - bounds.size.height).max(px(0.0));
         if self.reveal_caret || resized {
             let y = self.line_height * caret_line as f32;
@@ -612,16 +614,21 @@ impl Editor {
         self.scroll.y = self.scroll.y.clamp(px(0.0), max_y);
         let first = (f32::from(self.scroll.y) / f32::from(self.line_height)).floor() as usize;
         let count = (f32::from(bounds.size.height) / f32::from(self.line_height)).ceil() as usize + 1;
+        let mut caret = Some(caret);
         let lines: Vec<_> = (first..(first + count).min(self.state.line_count()))
             .map(|line| {
                 (
                     line,
-                    self.shape(line, window),
+                    if line == caret_line {
+                        caret.take().expect("caret line is laid out once")
+                    } else {
+                        self.shape(line, window)
+                    },
                     self.shape_text((line + 1).to_string().into(), window, true),
                 )
             })
             .collect();
-        let width = lines.iter().map(|(_, line, _)| line.width).fold(caret.width, Pixels::max);
+        let width = lines.iter().map(|(_, line, _)| line.width).fold(caret_width, Pixels::max);
         self.scroll.x = self.scroll.x.min((width + px(8.0) - (bounds.size.width - self.gutter)).max(px(0.0)));
         self.reveal_caret = false;
         lines

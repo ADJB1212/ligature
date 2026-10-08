@@ -190,20 +190,21 @@ impl Match {
     }
 
     fn at(text: &str, range: Range<usize>, line: usize, column: usize, line_start: usize, line_end: usize) -> Self {
-        let before: String = text[line_start..range.start]
-            .chars()
+        let before = text[line_start..range.start]
+            .char_indices()
             .rev()
             .take(60)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        let after: String = text[range.start..line_end].chars().take(120).collect();
+            .last()
+            .map_or(range.start, |(offset, _)| line_start + offset);
+        let after = text[range.start..line_end]
+            .char_indices()
+            .nth(120)
+            .map_or(line_end, |(offset, _)| range.start + offset);
         Self {
             line,
             column,
             range,
-            excerpt: format!("{before}{after}").trim_end_matches('\r').to_owned(),
+            excerpt: text[before..after].trim_end_matches('\r').to_owned(),
         }
     }
 }
@@ -276,5 +277,15 @@ mod tests {
         let search = search("cat", true, false);
         assert_eq!(relocate_match("one cat", "猫 one cat", &(4..7), &search), Some(8..11));
         assert_eq!(relocate_match("one cat", "one dog", &(4..7), &search), None);
+    }
+
+    #[test]
+    fn excerpts_limit_unicode_context_and_trim_crlf() {
+        let text = format!("{}cat{}\r\ncat\r\n", "猫".repeat(80), "😀".repeat(140));
+        let matches = describe_matches(&text, search("cat", true, false).find(&text));
+        assert_eq!(matches[0].excerpt, format!("{}cat{}", "猫".repeat(60), "😀".repeat(117)));
+        assert_eq!((matches[0].line, matches[0].column), (1, 81));
+        assert_eq!(matches[1].excerpt, "cat");
+        assert_eq!((matches[1].line, matches[1].column), (2, 1));
     }
 }

@@ -51,20 +51,27 @@ impl SourceRange {
             let end = if text[..end].ends_with('\r') { end - 1 } else { end };
             Some(start..end)
         };
-        let position = |position: SourcePosition| {
-            let range = line(position.line)?;
+        let position = |position: SourcePosition, range: Range<usize>| {
             let content = &text[range.clone()];
             let column = position.column.checked_sub(1)?;
-            let offset = if column == content.chars().count() {
-                content.len()
-            } else {
-                content.char_indices().nth(column)?.0
-            };
+            let offset = content
+                .char_indices()
+                .map(|(offset, _)| offset)
+                .chain(std::iter::once(content.len()))
+                .nth(column)?;
             Some(range.start + offset)
         };
         let range = match self {
-            Self::Lines { start, end } => line(*start)?.start..line(*end)?.end,
-            Self::Text { start, end } => position(*start)?..position(*end)?,
+            Self::Lines { start, end } => {
+                let first = line(*start)?;
+                let last = if start == end { first.clone() } else { line(*end)? };
+                first.start..last.end
+            }
+            Self::Text { start, end } => {
+                let first = line(start.line)?;
+                let last = if start.line == end.line { first.clone() } else { line(end.line)? };
+                position(*start, first)?..position(*end, last)?
+            }
         };
         (range.start <= range.end).then_some(range)
     }
@@ -113,5 +120,17 @@ mod tests {
         };
         assert_eq!(&text[range.byte_range(text).unwrap()], "😀");
         assert_eq!(SourceRange::Lines { start: 0, end: 1 }.byte_range(text), None);
+    }
+
+    #[test]
+    fn exact_locations_accept_line_end_and_reject_invalid_columns() {
+        let text = "first\r\nα😀\r\nlast";
+        let range = |start, end| SourceRange::Text { start, end }.byte_range(text);
+        let start = SourcePosition { line: 2, column: 2 };
+        assert_eq!(range(start, SourcePosition { line: 2, column: 3 }), Some(9..13));
+        assert_eq!(range(start, SourcePosition { line: 3, column: 1 }), Some(9..15));
+        assert_eq!(range(start, SourcePosition { line: 2, column: 4 }), None);
+        assert_eq!(range(SourcePosition { line: 2, column: 0 }, start), None);
+        assert_eq!(range(start, SourcePosition { line: 1, column: 1 }), None);
     }
 }
