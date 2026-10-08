@@ -77,3 +77,15 @@ pub fn run() {
         cx.activate(true);
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_app_compiles() {
+        // App startup logic is currently tested via integration and manual testing.
+        // This test ensures the `run` signature remains intact.
+        let _f: fn() = run;
+    }
+}

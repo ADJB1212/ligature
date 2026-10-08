@@ -107,3 +107,21 @@ pub mod spacing {
 pub fn window_background() -> Rgba {
     rgb(0x1a2330)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_colors_initialization() {
+        let c = colors();
+        // Just verify we can instantiate it
+        let _ = c.background;
+    }
+
+    #[test]
+    fn test_typography_and_spacing() {
+        assert_eq!(typography::editor_size(), px(15.0));
+        assert_eq!(spacing::small(), px(4.0));
+    }
+}

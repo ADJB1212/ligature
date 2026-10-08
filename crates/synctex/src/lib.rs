@@ -246,4 +246,22 @@ mod tests {
             .unwrap();
         assert!(point.x > 0.0);
     }
+
+    #[test]
+    fn inverse_prefers_content_nodes_over_enclosing_boxes() {
+        // Enclosing box and content node at exactly the same coordinates
+        let data = DATA.replace("x1,3:65536,131072", "[1,3:0,0:65536,131072,0\nx1,4:65536,131072");
+        let mapping = Mapping::parse(&data, Path::new("/project"), 1).unwrap();
+
+        let pdf_position = PdfPosition {
+            page: 1,
+            x: 65536.0 * 1.0 * 1000.0 / 1000.0 / 65536.0 * 72.0 / 72.27,
+            y: 131072.0 * 1.0 * 1000.0 / 1000.0 / 65536.0 * 72.0 / 72.27,
+        };
+
+        let source = mapping.inverse(pdf_position).unwrap();
+        // Since both have the same distance, the one that is not a container (container=false) should be chosen.
+        // The container is at line 3, the non-container is at line 4.
+        assert_eq!(source.line, 4);
+    }
 }

@@ -133,4 +133,12 @@ mod tests {
         assert_eq!(range(SourcePosition { line: 2, column: 0 }, start), None);
         assert_eq!(range(start, SourcePosition { line: 1, column: 1 }), None);
     }
+
+    #[test]
+    fn multiline_locations_span_lines_correctly() {
+        let text = "a\nb\nc";
+        assert_eq!(SourceRange::Lines { start: 1, end: 2 }.byte_range(text), Some(0..3));
+        assert_eq!(SourceRange::Lines { start: 1, end: 3 }.byte_range(text), Some(0..5));
+        assert_eq!(SourceRange::Lines { start: 2, end: 3 }.byte_range(text), Some(2..5));
+    }
 }
