@@ -26,7 +26,7 @@ use ligature_ui::{Button, Indicator, SplitPane, caption, chrome_strip, hairline,
 
 use lifecycle::Intent;
 
-const NEW_DOCUMENT: &str = "\\documentclass{article}\n\n\\begin{document}\n\n\\end{document}\n";
+const NEW_DOCUMENT: &str = "\\documentclass{article}\n\n\\begin{document}\n\\null\n\n\\end{document}\n";
 
 actions!(
     ligature_workspace,

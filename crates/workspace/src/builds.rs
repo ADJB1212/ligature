@@ -625,7 +625,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn untitled_render_job_updates_the_preview_without_a_project_or_save_prompt() {
+    fn starter_document_renders_without_a_project_or_save_prompt() {
         let directory = tempfile::tempdir().unwrap();
         let resources = BundledResources::new(
             std::path::Path::new(ligature_toolchain::BUILT_RESOURCE_DIRECTORY),
@@ -636,18 +636,7 @@ mod tests {
         cx.update(crate::init);
         let window = cx.add_window(Workspace::new);
         let root = window.root(&mut cx).unwrap();
-        let document = root.update(&mut cx, |workspace, cx| {
-            workspace.editor.update(cx, |editor, cx| {
-                editor.update_state(
-                    |state| {
-                        state.select_all();
-                        state.insert("\\documentclass{article}\n\\begin{document}\nUntitled preview\n\\end{document}\n", false);
-                    },
-                    cx,
-                )
-            });
-            workspace.editor.read(cx).state().buffer().id()
-        });
+        let document = root.read_with(&cx, |workspace, cx| workspace.editor.read(cx).state().buffer().id());
         let build = root
             .read_with(&cx, |workspace, cx| {
                 TextBuild::prepare(workspace.editor.read(cx).state().text(), &workspace.settings.build)
@@ -680,7 +669,7 @@ mod tests {
             assert_eq!(workspace.build_ui.preview_document, Some(document));
             assert!(workspace.build_ui.last_success.as_ref().unwrap().pdf.is_file());
             assert!(workspace.document.as_ref().unwrap().path.is_none());
-            assert!(workspace.editor.read(cx).state().is_dirty());
+            assert!(!workspace.editor.read(cx).state().is_dirty());
             assert_eq!(workspace.tabs.len(), 1);
             assert!(workspace.project.is_none());
             assert!(!workspace.busy);

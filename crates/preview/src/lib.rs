@@ -510,13 +510,13 @@ impl Render for Preview {
                     .child(
                         div()
                             .flex()
-                            .flex_1()
+                            .w_full()
+                            .flex_shrink_0()
                             .min_w(px(0.0))
                             .items_center()
-                            .justify_end()
                             .gap(spacing::small())
                             .child(indicator("preview-status", status_kind))
-                            .child(caption(status)),
+                            .child(div().flex_1().min_w(px(0.0)).overflow_hidden().child(caption(status))),
                     ),
             )
             .when_some(self.error.clone(), |view, error| view.child(inline_error(error)))

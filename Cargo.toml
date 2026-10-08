@@ -69,6 +69,14 @@ split-debuginfo = "unpacked"
 lto = "off"
 codegen-units = 256
 
+[profile.test]
+incremental = true
+opt-level = 1
+debug = "line-directives-only"
+split-debuginfo = "unpacked"
+lto = "off"
+codegen-units = 256
+
 [workspace.lints.rust]
 warnings = { level = "deny", priority = -1 }
 unused_mut = "deny"

@@ -63,7 +63,10 @@ fn open(cx: &mut TestAppContext, window: WindowHandle<Workspace>, path: &Path) {
 fn startup_and_new_documents_have_a_clean_latex_template() {
     let mut cx = TestAppContext::single();
     let (window, root) = workspace_with_template(&mut cx);
-    assert_eq!(text(&cx, &root), "\\documentclass{article}\n\n\\begin{document}\n\n\\end{document}\n");
+    assert_eq!(
+        text(&cx, &root),
+        "\\documentclass{article}\n\n\\begin{document}\n\\null\n\n\\end{document}\n"
+    );
     assert!(!root.read_with(&cx, |workspace, cx| workspace.dirty(cx)));
     type_text(&mut cx, &root, "edited ");
     start(&mut cx, window, Intent::New);
