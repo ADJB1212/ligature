@@ -18,13 +18,13 @@ serde_json = { version = "1", default-features = false, features = ["std"] }
 sha2 = { version = "0.11", default-features = false, features = ["alloc", "oid"] }
 tar = { version = "0.4", default-features = false }
 tempfile = { version = "3", default-features = false }
-zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [build-dependencies]
 tempfile = { version = "3", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["std"] }
 sha2 = { version = "0.11", default-features = false, features = ["alloc", "oid"] }
-zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [lints]
 workspace = true

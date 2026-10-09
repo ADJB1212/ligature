@@ -194,9 +194,9 @@ fn install_archive(
         return Err("TeX bundle download canceled".into());
     }
     let fonts: Vec<_> = overlay
-        .names()
-        .filter(|name| name.ends_with(".otf") || *name == "NewComputerModern-LICENSE.txt")
-        .map(str::to_owned)
+        .names()?
+        .into_iter()
+        .filter(|name| name.ends_with(".otf") || name == "NewComputerModern-LICENSE.txt")
         .collect();
     for name in fonts {
         writer.start_file(&name, options).map_err(|error| error.to_string())?;

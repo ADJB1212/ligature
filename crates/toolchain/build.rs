@@ -134,7 +134,7 @@ fn stage_resources(resources: &Path) -> Result<(), String> {
     fs::create_dir_all(&tex).map_err(|error| error.to_string())?;
     fs::create_dir_all(&fonts).map_err(|error| error.to_string())?;
     fs::copy(&source, tex.join("ligature-bundle-1.zip")).map_err(|error| error.to_string())?;
-    let names: Vec<_> = bundle.names().filter(|name| name.ends_with(".otf")).map(str::to_owned).collect();
+    let names: Vec<_> = bundle.names()?.into_iter().filter(|name| name.ends_with(".otf")).collect();
     for name in names {
         if Path::new(&name).file_name().and_then(|name| name.to_str()) != Some(name.as_str()) {
             return Err("Packaged font names must be plain filenames".into());

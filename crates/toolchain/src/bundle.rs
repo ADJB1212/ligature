@@ -37,11 +37,18 @@ impl LocalBundle {
     }
 
     pub fn contains(&self, name: &str) -> bool {
-        self.archive.file_names().any(|entry| entry == name)
+        self.archive.file_names().any(|entry| entry.is_ok_and(|entry| entry == name))
     }
 
-    pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.archive.file_names()
+    pub fn names(&self) -> Result<Vec<String>, String> {
+        self.archive
+            .file_names()
+            .map(|entry| {
+                entry
+                    .map(|name| name.into_owned())
+                    .map_err(|error| format!("Installation error: could not decode bundled resource name: {error}"))
+            })
+            .collect()
     }
 
     pub fn read(&mut self, name: &str) -> Result<Option<Vec<u8>>, String> {
