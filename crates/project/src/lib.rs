@@ -1,5 +1,9 @@
 //! TeX project membership, root-document selection, and relationships between project files.
 
+mod semantics;
+
+pub use semantics::{Location, OutlineEntry, SemanticIndex, Source};
+
 use ligature_fs::DirectoryEntry;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -204,60 +208,14 @@ impl IncludeGraph {
 }
 
 pub fn include_paths(text: &str) -> Vec<String> {
-    let mut paths = Vec::new();
-    for line in text.lines() {
-        let bytes = line.as_bytes();
-        let mut index = 0;
-        while index < bytes.len() {
-            if bytes[index] == b'%' {
-                break;
-            }
-            if bytes[index] != b'\\' {
-                index += 1;
-                continue;
-            }
-            index += 1;
-            let start = index;
-            while index < bytes.len() && bytes[index].is_ascii_alphabetic() {
-                index += 1;
-            }
-            let command = &line[start..index];
-            if !matches!(command, "input" | "include" | "subfile") {
-                if start == index {
-                    index = (index + 1).min(bytes.len());
-                }
-                continue;
-            }
-            while index < bytes.len() && bytes[index].is_ascii_whitespace() {
-                index += 1;
-            }
-            let braced = bytes.get(index) == Some(&b'{');
-            if braced {
-                index += 1;
-            }
-            let start = index;
-            while index < bytes.len()
-                && if braced {
-                    bytes[index] != b'}'
-                } else {
-                    !bytes[index].is_ascii_whitespace() && bytes[index] != b'%'
-                }
-            {
-                index += 1;
-            }
-            if braced && bytes.get(index) != Some(&b'}') {
-                continue;
-            }
-            let path = line[start..index].trim();
-            if !path.is_empty() && !path.contains(['\\', '{', '}', '#']) {
-                paths.push(path.to_owned());
-            }
-            if braced {
-                index += 1;
-            }
-        }
-    }
-    paths
+    let buffer = ligature_buffer::Buffer::from_text(text);
+    let snapshot = ligature_syntax::Snapshot::parse(buffer.id(), buffer.revision(), ligature_syntax::Language::Tex, text.into());
+    ligature_tex::parse(&snapshot)
+        .includes
+        .into_iter()
+        .filter(|include| !include.name.contains('#'))
+        .map(|include| include.name)
+        .collect()
 }
 
 #[cfg(test)]

@@ -25,6 +25,174 @@ fn workspace_with_template(cx: &mut TestAppContext) -> (WindowHandle<Workspace>,
     (window, root)
 }
 
+#[test]
+fn outline_navigation_preserves_untitled_identity_and_dirty_state() {
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    type_text(&mut cx, &root, "\\section{First}\n\\subsection{Child}\n\\label{key}\\ref{key}");
+    cx.run_until_parked();
+    let (identity, location) = root.read_with(&cx, |workspace, cx| {
+        assert_eq!(workspace.semantic_ui.index.outline[1].parent, Some(0));
+        (
+            workspace.editor.read(cx).state().buffer().id(),
+            workspace.semantic_ui.index.outline[1].location.clone(),
+        )
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        root.update(cx, |workspace, cx| workspace.navigate_semantic(location, window, cx));
+    })
+    .unwrap();
+    root.read_with(&cx, |workspace, cx| {
+        assert!(workspace.document.as_ref().unwrap().path.is_none());
+        assert_eq!(workspace.editor.read(cx).state().buffer().id(), identity);
+        assert!(workspace.dirty(cx));
+        assert_eq!(workspace.editor.read(cx).state().selected_text(), "\\subsection{Child}");
+    });
+}
+
+#[test]
+fn definition_shortcut_opens_labels_in_included_documents() {
+    let directory = tempfile::tempdir().unwrap();
+    let main = directory.path().join("main.tex");
+    let child = directory.path().join("child.tex");
+    fs::write(&main, "\\input{child}\n\\ref{target}").unwrap();
+    fs::write(&child, "\\section{Child}\n\\label{target}").unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    open(&mut cx, window, &main);
+    root.update(&mut cx, |workspace, cx| {
+        workspace.editor.update(cx, |editor, cx| {
+            editor.update_state(
+                |state| {
+                    let offset = state.text().find("ref{target}").unwrap() + 4;
+                    state.select(offset, offset);
+                },
+                cx,
+            )
+        });
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes(window.into(), "f12");
+    cx.run_until_parked();
+    root.read_with(&cx, |workspace, cx| {
+        assert_eq!(
+            workspace.document.as_ref().unwrap().path.as_ref(),
+            Some(&fs::canonicalize(child).unwrap())
+        );
+        assert_eq!(workspace.editor.read(cx).state().selected_text(), "target");
+        assert_eq!(workspace.tabs.len(), 2);
+        assert!(workspace.error.is_none(), "{:?}", workspace.error);
+    });
+}
+
+#[test]
+fn citation_navigation_opens_and_highlights_the_bibliography_key() {
+    let directory = tempfile::tempdir().unwrap();
+    let main = directory.path().join("main.tex");
+    let bibliography = directory.path().join("references.bib");
+    fs::write(&main, "\\bibliography{references}\n\\cite{book}").unwrap();
+    fs::write(&bibliography, "@book{book, title={Title}, year=2026}").unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    open(&mut cx, window, &main);
+    root.update(&mut cx, |workspace, cx| {
+        workspace.editor.update(cx, |editor, cx| {
+            editor.update_state(
+                |state| {
+                    let offset = state.text().find("cite{book}").unwrap() + 5;
+                    state.select(offset, offset);
+                },
+                cx,
+            )
+        });
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes(window.into(), "f12");
+    cx.run_until_parked();
+    root.read_with(&cx, |workspace, cx| {
+        assert_eq!(
+            workspace.document.as_ref().unwrap().path.as_ref(),
+            Some(&fs::canonicalize(bibliography).unwrap())
+        );
+        assert_eq!(workspace.editor.read(cx).state().selected_text(), "book");
+        assert_eq!(
+            workspace.editor.read(cx).syntax_snapshot().unwrap().language,
+            ligature_syntax::Language::Bibliography
+        );
+    });
+}
+
+#[test]
+fn duplicate_reference_navigation_requires_selecting_a_definition() {
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    type_text(&mut cx, &root, "\\label{key}\\label{key}\\ref{key}");
+    root.update(&mut cx, |workspace, cx| {
+        workspace.editor.update(cx, |editor, cx| {
+            editor.update_state(
+                |state| {
+                    let offset = state.text().rfind("key").unwrap();
+                    state.select(offset, offset);
+                },
+                cx,
+            )
+        });
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes(window.into(), "f12");
+    root.read_with(&cx, |workspace, cx| {
+        assert!(workspace.semantic_ui.visible);
+        assert!(workspace.error.as_ref().unwrap().contains("multiple definitions"));
+        assert!(workspace.editor.read(cx).state().selection().is_empty());
+    });
+}
+
+#[test]
+fn stale_outline_locations_do_not_select_changed_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("changed.tex");
+    fs::write(&path, "\\section{Old}").unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    let intent = Intent::OpenSemantic {
+        location: ligature_project::Location {
+            path: path.clone(),
+            range: 0..13,
+        },
+        original: "\\section{Old}".into(),
+    };
+    fs::write(path, "Different source").unwrap();
+    start(&mut cx, window, intent);
+    root.read_with(&cx, |workspace, cx| {
+        assert!(workspace.error.as_ref().unwrap().contains("source location changed"));
+        assert!(workspace.editor.read(cx).state().selection().is_empty());
+    });
+}
+
+#[test]
+fn unopened_file_changes_refresh_references_and_bibliography_entries() {
+    let directory = tempfile::tempdir().unwrap();
+    let main = directory.path().join("main.tex");
+    let child = directory.path().join("child.tex");
+    let bibliography = directory.path().join("references.bib");
+    fs::write(&main, "\\input{child}\\ref{key}\\bibliography{references}\\cite{book}").unwrap();
+    fs::write(&child, "\\label{key}").unwrap();
+    fs::write(&bibliography, "@book{book,title={Old}}").unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    open(&mut cx, window, &main);
+    fs::write(child, "\\section{Changed}").unwrap();
+    fs::write(bibliography, "@book{book,title={New}}").unwrap();
+    cx.executor().advance_clock(std::time::Duration::from_millis(500));
+    cx.run_until_parked();
+    root.read_with(&cx, |workspace, _| {
+        let index = &workspace.semantic_ui.index;
+        assert!(index.definitions("key").is_empty());
+        assert_eq!(index.unresolved_references[0].0, "key");
+        assert_eq!(index.bibliography.resolve("book")[0].entry.title(), Some("New"));
+    });
+}
+
 fn start(cx: &mut TestAppContext, window: WindowHandle<Workspace>, intent: Intent) {
     cx.update_window(window.into(), |root, window, cx| {
         root.downcast::<Workspace>()
@@ -439,6 +607,7 @@ fn edits_during_save_remain_dirty_and_undo_returns_to_the_written_snapshot() {
     let (window, root) = workspace(&mut cx);
     open(&mut cx, window, &path);
     type_text(&mut cx, &root, "first ");
+    cx.run_until_parked();
     let editor = root.read_with(&cx, |workspace, _| workspace.editor.clone());
     let edited = Rc::new(Cell::new(false));
     let flag = Rc::clone(&edited);

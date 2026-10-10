@@ -27,6 +27,23 @@ pub struct RenderKey {
     pub scale: u32,
 }
 
+pub fn raster_scale(page: Page, display_scale: u32) -> u32 {
+    let mut low = display_scale;
+    let mut high = display_scale.saturating_mul(2);
+    if page.raster_size(f64::from(high) / 1000.0).is_ok() {
+        return high;
+    }
+    while low < high {
+        let middle = low + (high - low).div_ceil(2);
+        if page.raster_size(f64::from(middle) / 1000.0).is_ok() {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    low
+}
+
 pub struct Cache<T> {
     entries: VecDeque<(RenderKey, usize, T)>,
     bytes: usize,
@@ -86,6 +103,56 @@ mod tests {
             generation: 1,
             page,
             scale: 1000,
+        }
+    }
+
+    #[test]
+    fn preview_supersamples_standard_and_retina_displays() {
+        let page = Page {
+            width: 612.0,
+            height: 792.0,
+            rotation: 0,
+        };
+        assert_eq!(page.raster_size(f64::from(raster_scale(page, 1000)) / 1000.0).unwrap(), (1224, 1584));
+        assert_eq!(page.raster_size(f64::from(raster_scale(page, 2000)) / 1000.0).unwrap(), (2448, 3168));
+    }
+
+    #[test]
+    fn supersampling_stays_within_raster_limits_without_reducing_display_resolution() {
+        for (page, display_scale) in [
+            (
+                Page {
+                    width: 612.0,
+                    height: 792.0,
+                    rotation: 90,
+                },
+                3000,
+            ),
+            (
+                Page {
+                    width: 12_000.0,
+                    height: 10.0,
+                    rotation: 0,
+                },
+                1000,
+            ),
+            (
+                Page {
+                    width: 12_000.0,
+                    height: 10.0,
+                    rotation: 0,
+                },
+                3000,
+            ),
+        ] {
+            let scale = raster_scale(page, display_scale);
+            assert!(scale >= display_scale);
+            if page.raster_size(f64::from(display_scale) / 1000.0).is_ok() {
+                assert!(page.raster_size(f64::from(scale) / 1000.0).is_ok());
+                assert!(page.raster_size(f64::from(scale + 1) / 1000.0).is_err());
+            } else {
+                assert_eq!(scale, display_scale);
+            }
         }
     }
 

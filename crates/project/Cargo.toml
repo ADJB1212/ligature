@@ -10,6 +10,10 @@ publish = false
 description = "TeX project membership, root-document selection, and relationships between project files"
 
 [dependencies]
+ligature-buffer.workspace = true
+ligature-syntax.workspace = true
+ligature-tex.workspace = true
+ligature-bibliography.workspace = true
 ligature-fs.workspace = true
 
 [dev-dependencies]

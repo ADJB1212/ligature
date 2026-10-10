@@ -5,6 +5,7 @@ mod lifecycle;
 mod project;
 mod resources;
 mod search;
+mod semantics;
 mod session;
 
 #[cfg(test)]
@@ -51,7 +52,9 @@ actions!(
         Build,
         CancelBuild,
         ShowInPreview,
-        ToggleBuildOutput
+        ToggleBuildOutput,
+        ToggleOutline,
+        GoToDefinition
     ]
 );
 
@@ -82,6 +85,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(&format!("{modifier}-shift-b"), CancelBuild, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-shift-j"), ShowInPreview, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-j"), ToggleBuildOutput, Some("LigatureWorkspace")),
+        KeyBinding::new("f12", GoToDefinition, Some("LigatureWorkspace")),
+        KeyBinding::new(&format!("{modifier}-shift-l"), ToggleOutline, Some("LigatureWorkspace")),
     ]);
 }
 
@@ -136,6 +141,7 @@ pub struct Workspace {
     build_ui: builds::BuildUi,
     build_log: Entity<Editor>,
     build_output_height: Pixels,
+    semantic_ui: semantics::SemanticUi,
 }
 
 struct Tab {
@@ -170,7 +176,7 @@ impl Workspace {
             entity.update(cx, |workspace, cx| workspace.start(Intent::CloseWindow, window, cx)).ok();
             false
         });
-        Self {
+        let mut workspace = Self {
             focus: cx.focus_handle(),
             editor,
             pane_ratio: 0.5,
@@ -198,7 +204,10 @@ impl Workspace {
             build_ui: builds::BuildUi::default(),
             build_log,
             build_output_height: px(240.0),
-        }
+            semantic_ui: semantics::SemanticUi::default(),
+        };
+        workspace.queue_semantics(cx);
+        workspace
     }
 
     pub fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -454,6 +463,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &CancelBuild, _, cx| this.cancel_build(cx)))
             .on_action(cx.listener(|this, _: &ShowInPreview, _, cx| this.show_in_preview(cx)))
             .on_action(cx.listener(|this, _: &ToggleBuildOutput, window, cx| this.toggle_build_output(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleOutline, _, cx| {
+                this.semantic_ui.visible = !this.semantic_ui.visible;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &GoToDefinition, window, cx| this.go_to_definition(window, cx)))
             .when(!unavailable, |view| {
                 view.on_action(cx.listener(|this, _: &Find, window, cx| this.show_search(false, false, window, cx)))
                     .on_action(cx.listener(|this, _: &Replace, window, cx| this.show_search(false, true, window, cx)))
@@ -502,6 +516,9 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h(gpui::px(0.0))
                     .when(self.project.is_some(), |view| view.child(self.render_tree(cx)).child(vertical_seam()))
+                    .when(self.semantic_ui.visible, |view| {
+                        view.child(self.render_outline(cx)).child(vertical_seam())
+                    })
                     .child(div().flex_1().min_w(gpui::px(0.0)).child(split_pane(
                         editor_pane,
                         self.preview.clone(),
@@ -578,6 +595,14 @@ impl Workspace {
                 Button::new("build", "Build")
                     .disabled(self.busy || !self.can_build() || self.build_ui.running())
                     .on_click(cx.listener(|this, _, window, cx| this.start_build(window, cx))),
+            )
+            .child(
+                Button::new("outline", "Outline")
+                    .selected(self.semantic_ui.visible)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.semantic_ui.visible = !this.semantic_ui.visible;
+                        cx.notify();
+                    })),
             )
             .when(self.build_ui.running(), |view| {
                 view.child(Button::new("cancel-build", "Cancel Build").on_click(cx.listener(|this, _, _, cx| this.cancel_build(cx))))

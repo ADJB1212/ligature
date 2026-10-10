@@ -9,5 +9,11 @@ license.workspace = true
 publish = false
 description = "TeX document semantics, commands, environments, labels, and document structure"
 
+[dependencies]
+ligature-syntax.workspace = true
+
+[dev-dependencies]
+ligature-buffer.workspace = true
+
 [lints]
 workspace = true

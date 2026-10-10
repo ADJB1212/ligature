@@ -9,5 +9,9 @@ license.workspace = true
 publish = false
 description = "Incremental parsing, syntax trees, and highlighting queries for document languages"
 
+[dependencies]
+ligature-buffer.workspace = true
+ligature-bibliography.workspace = true
+
 [lints]
 workspace = true

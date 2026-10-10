@@ -10,6 +10,7 @@ publish = false
 description = "UI colors, typography, spacing, and theme selection"
 
 [dependencies]
+ligature-syntax.workspace = true
 gpui.workspace = true
 
 [lints]

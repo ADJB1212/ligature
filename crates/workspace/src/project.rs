@@ -111,7 +111,25 @@ impl Workspace {
     }
 
     pub(super) fn configure_active_editor(&mut self, cx: &mut Context<Self>) {
-        self.editor.update(cx, |editor, cx| configure(editor, &self.settings, cx));
+        let language = self
+            .document
+            .as_ref()
+            .and_then(|document| document.path.as_ref())
+            .and_then(|path| path.extension())
+            .and_then(|extension| extension.to_str())
+            .map_or(ligature_syntax::Language::Tex, |extension| {
+                if extension.eq_ignore_ascii_case("bib") {
+                    ligature_syntax::Language::Bibliography
+                } else if extension.eq_ignore_ascii_case("txt") {
+                    ligature_syntax::Language::Plain
+                } else {
+                    ligature_syntax::Language::Tex
+                }
+            });
+        self.editor.update(cx, |editor, cx| {
+            editor.set_language(language, cx);
+            configure(editor, &self.settings, cx);
+        });
     }
 
     pub(super) fn update_membership(&mut self) {

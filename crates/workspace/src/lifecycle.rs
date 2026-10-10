@@ -12,6 +12,10 @@ pub(super) enum Intent {
     OpenPath(PathBuf),
     OpenSource(ligature_synctex::SourcePosition),
     OpenDiagnostic(ligature_diagnostics::Diagnostic),
+    OpenSemantic {
+        location: ligature_project::Location,
+        original: std::sync::Arc<str>,
+    },
     OpenSearchResult {
         path: PathBuf,
         original: String,
@@ -124,6 +128,21 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
                         .editor
                         .update(cx, |editor, cx| editor.update_state(|state| state.select(range.start, range.end), cx));
                 }
+                workspace.focus_editor(window, cx);
+                Ok::<_, String>(())
+            })
+            .map_err(|error| error.to_string())??;
+        }
+        Intent::OpenSemantic { location, original } => {
+            open_path(this, cx, location.path).await?;
+            this.update_in(cx, |workspace, window, cx| {
+                let text = workspace.editor.read(cx).state().text();
+                if text != original.as_ref() || text.get(location.range.clone()).is_none() {
+                    return Err("This source location changed. Refresh the outline before navigating.".into());
+                }
+                workspace.editor.update(cx, |editor, cx| {
+                    editor.update_state(|state| state.select(location.range.start, location.range.end), cx)
+                });
                 workspace.focus_editor(window, cx);
                 Ok::<_, String>(())
             })
@@ -374,6 +393,8 @@ pub(super) async fn save(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowConte
             document.disk = FileState::Present(bytes);
             document.diverged = false;
         }
+        workspace.configure_active_editor(cx);
+        workspace.queue_semantics(cx);
         workspace.start_watching(window, cx);
         workspace.update_membership();
     })

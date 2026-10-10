@@ -53,6 +53,33 @@ pub fn colors() -> Colors {
     }
 }
 
+pub struct SyntaxStyle {
+    pub color: Hsla,
+    pub weight: gpui::FontWeight,
+    pub style: gpui::FontStyle,
+}
+
+pub fn syntax_style(category: ligature_syntax::Category) -> SyntaxStyle {
+    use ligature_syntax::Category;
+    let colors = colors();
+    SyntaxStyle {
+        color: match category {
+            Category::Comment => colors.muted_text,
+            Category::Brace | Category::MathDelimiter => colors.focus,
+            _ => colors.text,
+        },
+        weight: match category {
+            Category::Command | Category::Environment | Category::EntryType | Category::Field => gpui::FontWeight::BOLD,
+            _ => gpui::FontWeight::NORMAL,
+        },
+        style: if category == Category::Comment {
+            gpui::FontStyle::Italic
+        } else {
+            gpui::FontStyle::Normal
+        },
+    }
+}
+
 pub mod typography {
     use super::{Pixels, px};
 

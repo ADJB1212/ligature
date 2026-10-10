@@ -1,4 +1,4 @@
-use std::{ops::Range, time::Duration};
+use std::{ops::Range, sync::Arc, time::Duration};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementInputHandler, EntityInputHandler, FocusHandle, Focusable, Font, IntoElement, KeyBinding,
@@ -54,11 +54,16 @@ pub struct Editor {
     search_revision: Option<(ligature_buffer::Revision, bool)>,
     diagnostics: Vec<(Range<usize>, ligature_diagnostics::Severity)>,
     diagnostic_revision: Option<ligature_buffer::Revision>,
+    language: ligature_syntax::Language,
+    syntax: Option<Arc<ligature_syntax::Snapshot>>,
+    structure: ligature_tex::Document,
+    parse_requested: Option<(ligature_buffer::DocumentId, ligature_buffer::Revision, ligature_syntax::Language)>,
+    parse_task: Option<Task<()>>,
 }
 
 impl Editor {
     pub fn new(buffer: Buffer, cx: &mut Context<Self>) -> Self {
-        Self {
+        let mut editor = Self {
             state: EditorState::new(buffer),
             read_only: false,
             focus: cx.focus_handle().tab_stop(true),
@@ -82,14 +87,90 @@ impl Editor {
             search_revision: None,
             diagnostics: Vec::new(),
             diagnostic_revision: None,
-        }
+            language: ligature_syntax::Language::Tex,
+            syntax: None,
+            structure: ligature_tex::Document::default(),
+            parse_requested: None,
+            parse_task: None,
+        };
+        editor.queue_parse(cx);
+        editor
     }
 
     pub fn read_only(buffer: Buffer, cx: &mut Context<Self>) -> Self {
-        Self {
+        let mut editor = Self {
             read_only: true,
             ..Self::new(buffer, cx)
+        };
+        editor.set_language(ligature_syntax::Language::Plain, cx);
+        editor
+    }
+
+    pub fn set_language(&mut self, language: ligature_syntax::Language, cx: &mut Context<Self>) {
+        if self.language != language {
+            self.language = language;
+            self.syntax = None;
+            self.structure = ligature_tex::Document::default();
+            self.parse_requested = None;
+            self.queue_parse(cx);
+            cx.notify();
         }
+    }
+
+    pub fn syntax_snapshot(&self) -> Option<&ligature_syntax::Snapshot> {
+        self.syntax.as_deref().filter(|snapshot| {
+            self.state.marked_range().is_none() && snapshot.is_current(self.state.buffer().id(), self.state.buffer().revision(), self.language)
+        })
+    }
+
+    pub fn structure(&self) -> Option<&ligature_tex::Document> {
+        self.syntax_snapshot()
+            .filter(|snapshot| snapshot.language == ligature_syntax::Language::Tex)
+            .map(|_| &self.structure)
+    }
+
+    fn queue_parse(&mut self, cx: &mut Context<Self>) {
+        if self.language == ligature_syntax::Language::Plain || self.state.marked_range().is_some() {
+            self.parse_task = None;
+            self.parse_requested = None;
+            return;
+        }
+        let key = (self.state.buffer().id(), self.state.buffer().revision(), self.language);
+        if self.parse_requested == Some(key) {
+            return;
+        }
+        self.parse_requested = Some(key);
+        let text: Arc<str> = self.state.buffer().text().into();
+        let previous = self.syntax.clone();
+        self.parse_task = Some(cx.spawn(async move |this, cx| {
+            let (snapshot, structure) = cx
+                .background_executor()
+                .spawn(async move {
+                    let snapshot = if let Some(previous) = previous.filter(|snapshot| snapshot.document == key.0 && snapshot.language == key.2) {
+                        previous.refresh(key.1, text)
+                    } else {
+                        ligature_syntax::Snapshot::parse(key.0, key.1, key.2, text)
+                    };
+                    let structure = if key.2 == ligature_syntax::Language::Tex {
+                        ligature_tex::parse(&snapshot)
+                    } else {
+                        ligature_tex::Document::default()
+                    };
+                    (Arc::new(snapshot), structure)
+                })
+                .await;
+            this.update(cx, |editor, cx| {
+                if editor.parse_requested == Some(key)
+                    && editor.state.marked_range().is_none()
+                    && snapshot.is_current(editor.state.buffer().id(), editor.state.buffer().revision(), editor.language)
+                {
+                    editor.syntax = Some(snapshot);
+                    editor.structure = structure;
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
     }
 
     pub fn state(&self) -> &EditorState {
@@ -150,6 +231,7 @@ impl Editor {
         self.diagnostics.clear();
         self.diagnostic_revision = None;
         self.refresh_search();
+        self.queue_parse(cx);
         cx.notify();
     }
 
@@ -158,6 +240,7 @@ impl Editor {
         self.preferred_x = None;
         self.reveal_caret = true;
         self.refresh_search();
+        self.queue_parse(cx);
         cx.notify();
         result
     }
@@ -251,6 +334,7 @@ impl Editor {
     fn changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.reveal_caret = true;
         self.refresh_search();
+        self.queue_parse(cx);
         window.focus(&self.focus, cx);
         self.restart_blink(cx);
         cx.notify();
@@ -372,7 +456,7 @@ impl Editor {
         let mut x = px(0.0);
         let mut byte = 0;
         for part in text.split('\t') {
-            let shaped = self.shape_text(part.to_owned().into(), window, false);
+            let shaped = self.shape_source(part.to_owned().into(), range.start + byte, window);
             let mut glyphs = shaped.runs.iter().flat_map(|run| &run.glyphs).peekable();
             for (offset, _) in part.grapheme_indices(true) {
                 while glyphs.peek().is_some_and(|glyph| glyph.index < offset) {
@@ -413,6 +497,44 @@ impl Editor {
             }],
             None,
         )
+    }
+
+    fn shape_source(&self, text: SharedString, start: usize, window: &Window) -> ShapedLine {
+        let Some(snapshot) = self.syntax_snapshot() else {
+            return self.shape_text(text, window, false);
+        };
+        let end = start + text.len();
+        let mut runs = Vec::new();
+        let mut cursor = start;
+        let first = snapshot.tokens.partition_point(|token| token.range.end <= start);
+        let font = self.font.clone().unwrap_or_else(|| window.text_style().font());
+        let mut append = |len, category| {
+            if len == 0 {
+                return;
+            }
+            let style = ligature_theme::syntax_style(category);
+            let mut font = font.clone();
+            font.weight = style.weight;
+            font.style = style.style;
+            runs.push(TextRun {
+                len,
+                font,
+                color: style.color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+                letter_spacing: None,
+            });
+        };
+        for token in snapshot.tokens[first..].iter().take_while(|token| token.range.start < end) {
+            let token_start = token.range.start.max(cursor);
+            append(token_start - cursor, ligature_syntax::Category::Text);
+            let token_end = token.range.end.min(end);
+            append(token_end - token_start, token.category);
+            cursor = token_end;
+        }
+        append(end - cursor, ligature_syntax::Category::Text);
+        window.text_system().shape_line(text, self.font_size, &runs, None)
     }
 
     fn hit_test(&self, position: Point<Pixels>, window: &Window) -> usize {
@@ -893,6 +1015,84 @@ mod tests {
     use super::*;
     use gpui::{AppContext, TestAppContext};
     use ligature_buffer::Buffer;
+
+    #[test]
+    fn background_highlighting_preserves_selection_scroll_and_history() {
+        let mut cx = TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new(Buffer::from_text("\\section{First}\nbody"), cx));
+        editor.update(&mut cx, |editor, cx| {
+            editor.update_state(|state| state.insert("% comment\n", false), cx);
+            editor.state.select(12, 19);
+            editor.scroll = point(px(8.0), px(24.0));
+            editor.reveal_caret = false;
+        });
+        cx.run_until_parked();
+        editor.read_with(&cx, |editor, _| {
+            let snapshot = editor.syntax_snapshot().unwrap();
+            assert_eq!(snapshot.text.as_ref(), editor.state.text());
+            assert_eq!(editor.state.selection(), 12..19);
+            assert_eq!(editor.scroll, point(px(8.0), px(24.0)));
+            assert!(!editor.reveal_caret);
+            assert_eq!(editor.structure().unwrap().headings[0].title, "First");
+            assert!(editor.state.is_dirty());
+        });
+        editor.update(&mut cx, |editor, cx| editor.update_state(|state| state.undo(), cx));
+        cx.run_until_parked();
+        editor.read_with(&cx, |editor, _| {
+            assert_eq!(editor.syntax_snapshot().unwrap().text.as_ref(), "\\section{First}\nbody");
+            assert!(!editor.state.is_dirty());
+        });
+    }
+
+    #[test]
+    fn obsolete_parses_are_hidden_across_edits_reload_and_document_replacement() {
+        let mut cx = TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new(Buffer::from_text("\\label{old}"), cx));
+        cx.run_until_parked();
+        editor.update(&mut cx, |editor, cx| {
+            assert!(editor.syntax_snapshot().is_some());
+            editor.update_state(|state| state.reload("\\label{new}".into()), cx);
+            assert!(editor.syntax_snapshot().is_none());
+            editor.set_buffer(Buffer::from_text("\\section{Replacement}"), cx);
+            assert!(editor.syntax_snapshot().is_none());
+        });
+        cx.run_until_parked();
+        editor.read_with(&cx, |editor, _| {
+            assert_eq!(editor.structure().unwrap().headings[0].title, "Replacement");
+            assert!(editor.structure().unwrap().labels.is_empty());
+        });
+    }
+
+    #[test]
+    fn composition_and_language_changes_invalidate_highlights() {
+        let mut cx = TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new(Buffer::from_text("\\label{key}"), cx));
+        cx.run_until_parked();
+        editor.update(&mut cx, |editor, cx| {
+            editor.update_state(|state| state.mark(Some(0..0), "draft", None), cx);
+            assert!(editor.syntax_snapshot().is_none());
+            editor.update_state(|state| state.commit_composition(), cx);
+        });
+        cx.run_until_parked();
+        editor.update(&mut cx, |editor, cx| {
+            assert!(editor.syntax_snapshot().is_some());
+            editor.set_language(ligature_syntax::Language::Bibliography, cx);
+            editor.update_state(|state| state.reload("@book{key,title={Title}}".into()), cx);
+            assert!(editor.syntax_snapshot().is_none());
+        });
+        cx.run_until_parked();
+        editor.read_with(&cx, |editor, _| {
+            assert!(
+                editor
+                    .syntax_snapshot()
+                    .unwrap()
+                    .tokens
+                    .iter()
+                    .any(|token| token.category == ligature_syntax::Category::EntryType)
+            );
+            assert!(editor.structure().is_none());
+        });
+    }
 
     #[test]
     fn grapheme_layout_preserves_shaped_caret_positions() {

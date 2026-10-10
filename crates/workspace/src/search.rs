@@ -205,6 +205,7 @@ impl Workspace {
         if changed {
             self.refresh_preview_staleness(cx);
             self.refresh_diagnostics(cx);
+            self.queue_semantics(cx);
         }
         self.search.observed = Some(observed);
         self.refresh_document_search(cx);
