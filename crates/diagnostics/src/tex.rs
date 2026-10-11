@@ -187,8 +187,10 @@ fn line_range(message: &str) -> Option<SourceRange> {
 fn located_message<'a>(message: &'a str, directory: &Path) -> (Option<PathBuf>, Option<SourceRange>, &'a str) {
     for (index, _) in message.match_indices(':') {
         let rest = &message[index + 1..];
-        let Some((number, rest)) = rest.split_once(':') else { continue };
-        let Ok(line) = number.parse::<usize>() else { continue };
+        let number = rest.strip_prefix('+').unwrap_or(rest);
+        let digits = number.bytes().take_while(u8::is_ascii_digit).count();
+        let Some(rest) = number[digits..].strip_prefix(':') else { continue };
+        let Ok(line) = number[..digits].parse::<usize>() else { continue };
         if line == 0 || index == 0 {
             continue;
         }

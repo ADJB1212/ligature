@@ -190,6 +190,16 @@ impl BuildJob {
             shared.snapshot.state = BuildState::Running;
         }
         let result = self.execute(request, resources);
+        let output = {
+            let mut shared = self.0.lock().unwrap();
+            (!shared.canceled).then(|| {
+                let output = shared.status_output.take().unwrap_or_else(|| shared.snapshot.output.clone());
+                (shared.snapshot.id, output)
+            })
+        };
+        let parsed = output.map_or_else(Vec::new, |(id, output)| {
+            parse_tex(&output, request.filesystem_root(), request.root_document(), id)
+        });
         let mut shared = self.0.lock().unwrap();
         if shared.canceled {
             drop(result);
@@ -197,12 +207,6 @@ impl BuildJob {
             shared.snapshot.diagnostics.clear();
             shared.snapshot.temporary_source = None;
         } else {
-            let parsed = parse_tex(
-                shared.status_output.as_deref().unwrap_or(&shared.snapshot.output),
-                request.filesystem_root(),
-                request.root_document(),
-                shared.snapshot.id,
-            );
             let tex_log_available = shared.tex_log_available;
             merge_diagnostics(&mut shared.snapshot.diagnostics, parsed, tex_log_available);
             match result {
@@ -299,16 +303,12 @@ impl BuildJob {
                     self.0.lock().unwrap().snapshot.truncated = true;
                     let _ = file.seek(SeekFrom::End(-(LOG_LIMIT as i64)));
                 }
-                let mut bytes = Vec::new();
+                let mut bytes = Vec::with_capacity(length.min(LOG_LIMIT as u64) as usize);
                 if file.take(LOG_LIMIT as u64).read_to_end(&mut bytes).is_ok() {
                     if path == &log && length <= LOG_LIMIT as u64 {
+                        let id = self.0.lock().unwrap().snapshot.id;
+                        let diagnostics = parse_tex(&String::from_utf8_lossy(&bytes), request.filesystem_root(), request.root_document(), id);
                         let mut shared = self.0.lock().unwrap();
-                        let diagnostics = parse_tex(
-                            &String::from_utf8_lossy(&bytes),
-                            request.filesystem_root(),
-                            request.root_document(),
-                            shared.snapshot.id,
-                        );
                         shared.snapshot.diagnostics.extend(diagnostics);
                         shared.tex_log_available = true;
                     }

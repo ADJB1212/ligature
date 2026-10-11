@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{borrow::Cow, collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
 use gpui::{Context, IntoElement, Task, Window, div, prelude::*, px};
 use ligature_buffer::{DocumentId, Revision};
@@ -13,6 +13,7 @@ pub(super) struct SemanticUi {
     pub visible: bool,
     pub index: Arc<SemanticIndex>,
     task: Option<Task<()>>,
+    open_sources: BTreeMap<PathBuf, (DocumentId, Revision, Arc<str>)>,
 }
 
 #[cfg(test)]
@@ -45,6 +46,39 @@ mod tests {
             assert!(workspace.semantic_version(cx) != saved);
         });
     }
+
+    #[test]
+    fn semantic_inputs_share_unchanged_buffers_and_drop_closed_sources() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(Workspace::new);
+        let workspace = window.root(&mut cx).unwrap();
+        workspace.update(&mut cx, |workspace, cx| {
+            let (root, initial) = workspace.semantic_inputs(cx).unwrap();
+            let (_, unchanged) = workspace.semantic_inputs(cx).unwrap();
+            assert!(Arc::ptr_eq(&initial[&root], &unchanged[&root]));
+            workspace.editor.update(cx, |editor, cx| {
+                editor.update_state(|state| state.insert("changed", false), cx);
+            });
+            let (_, edited) = workspace.semantic_inputs(cx).unwrap();
+            assert!(!Arc::ptr_eq(&initial[&root], &edited[&root]));
+            assert_eq!(edited[&root].as_ref(), workspace.editor.read(cx).state().buffer().text());
+            workspace.editor.update(cx, |editor, cx| {
+                editor.set_buffer(ligature_buffer::Buffer::from_text(edited[&root].as_ref()), cx);
+            });
+            let (replacement_root, replaced) = workspace.semantic_inputs(cx).unwrap();
+            assert!(!Arc::ptr_eq(&edited[&root], &replaced[&replacement_root]));
+            assert_eq!(edited[&root], replaced[&replacement_root]);
+            assert!(!workspace.semantic_ui.open_sources.contains_key(&root));
+            workspace.document.as_mut().unwrap().path = Some("/project/saved.tex".into());
+            let (saved, _) = workspace.semantic_inputs(cx).unwrap();
+            assert_ne!(replacement_root, saved);
+            assert!(!workspace.semantic_ui.open_sources.contains_key(&replacement_root));
+            let document = workspace.document.take();
+            assert!(workspace.semantic_inputs(cx).is_none());
+            assert!(workspace.semantic_ui.open_sources.is_empty());
+            workspace.document = document;
+        });
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -61,8 +95,11 @@ impl Workspace {
             .unwrap_or_else(|| std::env::temp_dir().join(format!("ligature-outline-{:?}.tex", self.editor.read(cx).state().buffer().id())))
     }
 
-    fn semantic_inputs(&self, cx: &gpui::App) -> Option<(PathBuf, BTreeMap<PathBuf, String>)> {
-        self.document.as_ref()?;
+    fn semantic_inputs(&mut self, cx: &gpui::App) -> Option<(PathBuf, BTreeMap<PathBuf, Arc<str>>)> {
+        if self.document.is_none() {
+            self.semantic_ui.open_sources.clear();
+            return None;
+        }
         let active = self.semantic_path(cx);
         let root = self
             .project
@@ -70,12 +107,26 @@ impl Workspace {
             .and_then(|project| project.root_document.as_ref().map(|path| project.root.join(path)))
             .unwrap_or_else(|| active.clone());
         let mut text = BTreeMap::new();
-        text.insert(active, self.editor.read(cx).state().buffer().text().to_owned());
+        let mut snapshot = |path: PathBuf, editor: &ligature_editor::Editor| {
+            let buffer = editor.state().buffer();
+            let version = (buffer.id(), buffer.revision());
+            let source = self
+                .semantic_ui
+                .open_sources
+                .entry(path.clone())
+                .or_insert_with(|| (version.0, version.1, Arc::from(buffer.text())));
+            if (source.0, source.1) != version {
+                *source = (version.0, version.1, Arc::from(buffer.text()));
+            }
+            text.insert(path, Arc::clone(&source.2));
+        };
+        snapshot(active, self.editor.read(cx));
         for tab in self.tabs.iter().flatten() {
             if let Some(path) = &tab.document.path {
-                text.insert(path.clone(), tab.editor.read(cx).state().buffer().text().to_owned());
+                snapshot(path.clone(), tab.editor.read(cx));
             }
         }
+        self.semantic_ui.open_sources.retain(|path, _| text.contains_key(path));
         Some((root, text))
     }
 
@@ -115,9 +166,14 @@ impl Workspace {
                         .background_executor()
                         .spawn(async move {
                             SemanticIndex::refresh_with(&root, &previous, |path| {
-                                text.get(path)
-                                    .cloned()
-                                    .map_or_else(|| ligature_fs::read(path).map(|file| file.text).map_err(|error| error.to_string()), Ok)
+                                text.get(path).map_or_else(
+                                    || {
+                                        ligature_fs::read(path)
+                                            .map(|file| Cow::Owned(file.text))
+                                            .map_err(|error| error.to_string())
+                                    },
+                                    |text| Ok(Cow::Borrowed(text.as_ref())),
+                                )
                             })
                         })
                         .await;

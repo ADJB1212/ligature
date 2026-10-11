@@ -161,10 +161,19 @@ impl EditorState {
     pub fn select_word(&mut self, offset: usize) {
         self.commit_composition();
         let offset = snap(self.text(), offset);
-        let range = self
-            .text()
+        let line = self.line_index(offset);
+        let start = self.line_range(line).start;
+        let end = if line + 1 < self.line_count() {
+            self.line_range(line + 1).start
+        } else {
+            self.text().len()
+        };
+        let range = self.text()[start..end]
             .split_word_bound_indices()
-            .find_map(|(start, word)| (start <= offset && offset < start + word.len()).then_some(start..start + word.len()))
+            .find_map(|(index, word)| {
+                let start = start + index;
+                (start <= offset && offset < start + word.len()).then_some(start..start + word.len())
+            })
             .unwrap_or(offset..offset);
         self.select(range.start, range.end);
     }

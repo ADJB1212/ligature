@@ -156,6 +156,25 @@ fn line_document_word_and_shift_movements_select_expected_text() {
 }
 
 #[test]
+fn word_selection_preserves_unicode_and_line_ending_boundaries() {
+    let prefix = "earlier text\n".repeat(4096);
+    let text = format!("{prefix}cafe\u{301} word\r\nlast\n");
+    let mut editor = editor(&text);
+    for (offset, selected) in [
+        (1, "cafe\u{301}"),
+        (7, "word"),
+        (11, "\r\n"),
+        (12, "\r\n"),
+        (14, "last"),
+        (17, "\n"),
+        (18, ""),
+    ] {
+        editor.select_word(prefix.len() + offset);
+        assert_eq!(editor.selected_text(), selected, "offset {offset}");
+    }
+}
+
+#[test]
 fn newlines_and_grapheme_deletion_preserve_crlf() {
     let mut editor = editor("a\r\nb");
     editor.select(1, 1);

@@ -27,7 +27,7 @@ pub struct OutlineEntry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Source {
     pub text: Arc<str>,
-    pub document: ligature_tex::Document,
+    pub document: Arc<ligature_tex::Document>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -47,7 +47,10 @@ impl SemanticIndex {
         Self::refresh_with(root, &Self::default(), read)
     }
 
-    pub fn refresh_with(root: &Path, previous: &Self, mut read: impl FnMut(&Path) -> Result<String, String>) -> Self {
+    pub fn refresh_with<T>(root: &Path, previous: &Self, mut read: impl FnMut(&Path) -> Result<T, String>) -> Self
+    where
+        T: AsRef<str> + Into<Arc<str>>,
+    {
         let mut index = Self::default();
         let root = canonical(root);
         let mut pending = vec![root.clone()];
@@ -70,15 +73,19 @@ impl SemanticIndex {
                     continue;
                 }
             };
-            let source = if let Some(source) = previous.sources.get(&path).filter(|source| source.text.as_ref() == text) {
+            let source = if let Some(source) = previous
+                .sources
+                .get(&path)
+                .filter(|source| std::ptr::eq(source.text.as_ref(), text.as_ref()) || source.text.as_ref() == text.as_ref())
+            {
                 source.clone()
             } else {
                 let buffer = Buffer::new();
-                let text: Arc<str> = text.into();
+                let text = text.into();
                 let snapshot = Snapshot::parse(buffer.id(), buffer.revision(), Language::Tex, Arc::clone(&text));
                 Source {
                     text,
-                    document: ligature_tex::parse(&snapshot),
+                    document: Arc::new(ligature_tex::parse(&snapshot)),
                 }
             };
             let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -99,13 +106,16 @@ impl SemanticIndex {
         for path in bibliography_files {
             match read(&path) {
                 Ok(text) => {
-                    let unchanged = previous.bibliography_sources.get(&path).filter(|old| old.as_ref() == text);
+                    let unchanged = previous
+                        .bibliography_sources
+                        .get(&path)
+                        .filter(|old| std::ptr::eq(old.as_ref(), text.as_ref()) || old.as_ref() == text.as_ref());
                     if unchanged.is_some() {
                         for &(key, definition) in previous_bibliographies.get(&path).into_iter().flatten() {
                             index.bibliography.entries.entry(key.clone()).or_default().push(definition.clone());
                         }
                     } else {
-                        index.bibliography.insert(path.clone(), &ligature_bibliography::parse(&text));
+                        index.bibliography.insert(path.clone(), &ligature_bibliography::parse(text.as_ref()));
                     }
                     index.bibliography_sources.insert(path, unchanged.cloned().unwrap_or_else(|| text.into()));
                 }
@@ -202,21 +212,19 @@ fn outline(root: &Path, sources: &BTreeMap<PathBuf, Source>) -> Vec<OutlineEntry
                 }
                 let Some(source) = sources.get(&path) else { continue };
                 let parent = path.parent().unwrap_or_else(|| Path::new("."));
-                let mut events: Vec<_> = source
-                    .document
-                    .headings
-                    .iter()
-                    .map(|heading| (heading.range.start, Event::Heading(path.clone(), heading)))
-                    .chain(
-                        source
-                            .document
-                            .includes
-                            .iter()
-                            .map(|include| (include.range.start, Event::File(resource(parent, &include.name, "tex")))),
-                    )
-                    .collect();
-                events.sort_by_key(|(offset, _)| *offset);
-                pending.extend(events.into_iter().rev().map(|(_, event)| event));
+                let mut source_headings = source.document.headings.iter().rev().peekable();
+                let mut includes = source.document.includes.iter().rev().peekable();
+                pending.reserve(source_headings.len() + includes.len());
+                while source_headings.peek().is_some() || includes.peek().is_some() {
+                    if source_headings
+                        .peek()
+                        .is_some_and(|heading| includes.peek().is_none_or(|include| heading.range.start > include.range.start))
+                    {
+                        pending.push(Event::Heading(path.clone(), source_headings.next().unwrap()));
+                    } else {
+                        pending.push(Event::File(resource(parent, &includes.next().unwrap().name, "tex")));
+                    }
+                }
             }
             Event::Heading(path, heading) => {
                 while headings.last().is_some_and(|&entry| result[entry].level >= heading.level) {
@@ -292,6 +300,7 @@ mod tests {
         assert_eq!(refreshed.unresolved_references.len(), 2);
         assert_eq!(refreshed.errors.len(), 1);
         assert!(Arc::ptr_eq(&initial.sources[root].text, &refreshed.sources[root].text));
+        assert!(Arc::ptr_eq(&initial.sources[root].document, &refreshed.sources[root].document));
     }
 
     #[test]
@@ -301,6 +310,9 @@ mod tests {
         let initial = SemanticIndex::load_with(root, |path| files.get(path).cloned().ok_or_else(|| "missing".into()));
         let refreshed = SemanticIndex::refresh_with(root, &initial, |path| files.get(path).cloned().ok_or_else(|| "missing".into()));
         assert_eq!(initial, refreshed);
+        for (path, source) in &initial.sources {
+            assert!(Arc::ptr_eq(&source.document, &refreshed.sources[path].document));
+        }
         for (path, text) in &initial.bibliography_sources {
             assert!(Arc::ptr_eq(text, &refreshed.bibliography_sources[path]));
         }

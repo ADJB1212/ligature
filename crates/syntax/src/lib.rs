@@ -65,8 +65,10 @@ impl Snapshot {
     pub fn update(&self, revision: Revision, range: Range<usize>, replacement: &str) -> Self {
         assert!(range.start <= range.end && range.end <= self.text.len());
         assert!(self.text.is_char_boundary(range.start) && self.text.is_char_boundary(range.end));
-        let mut text = self.text.to_string();
-        text.replace_range(range.clone(), replacement);
+        let mut text = String::with_capacity(self.text.len() - range.len() + replacement.len());
+        text.push_str(&self.text[..range.start]);
+        text.push_str(replacement);
+        text.push_str(&self.text[range.end..]);
         self.reparse(revision, text.into(), range.start)
     }
 
@@ -80,11 +82,16 @@ impl Snapshot {
 
     fn reparse(&self, revision: Revision, text: Arc<str>, changed: usize) -> Self {
         // Restart before a boundary edit, which may remove the newline or an entry opener.
-        let start = self.checkpoints.iter().rev().copied().find(|&offset| offset < changed).unwrap_or(0);
+        let checkpoint = self.checkpoints.partition_point(|&offset| offset < changed);
+        let start = checkpoint.checked_sub(1).map_or(0, |index| self.checkpoints[index]);
         let (suffix, checkpoints) = lex(self.language, &text[start..], start);
-        let mut tokens: Vec<_> = self.tokens.iter().take_while(|token| token.range.end <= start).cloned().collect();
+        let token_count = self.tokens.partition_point(|token| token.range.end <= start);
+        let mut tokens = Vec::with_capacity(token_count + suffix.len());
+        tokens.extend_from_slice(&self.tokens[..token_count]);
         tokens.extend(suffix);
-        let mut prefix: Vec<_> = self.checkpoints.iter().copied().take_while(|&offset| offset < start).collect();
+        let prefix_count = self.checkpoints.partition_point(|&offset| offset < start);
+        let mut prefix = Vec::with_capacity(prefix_count + checkpoints.len());
+        prefix.extend_from_slice(&self.checkpoints[..prefix_count]);
         prefix.extend(checkpoints);
         let reparsed = start..text.len();
         Self {

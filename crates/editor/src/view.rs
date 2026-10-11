@@ -63,9 +63,17 @@ pub struct Editor {
 
 impl Editor {
     pub fn new(buffer: Buffer, cx: &mut Context<Self>) -> Self {
+        Self::with_language(buffer, false, ligature_syntax::Language::Tex, cx)
+    }
+
+    pub fn read_only(buffer: Buffer, cx: &mut Context<Self>) -> Self {
+        Self::with_language(buffer, true, ligature_syntax::Language::Plain, cx)
+    }
+
+    fn with_language(buffer: Buffer, read_only: bool, language: ligature_syntax::Language, cx: &mut Context<Self>) -> Self {
         let mut editor = Self {
             state: EditorState::new(buffer),
-            read_only: false,
+            read_only,
             focus: cx.focus_handle().tab_stop(true),
             bounds: Bounds::default(),
             scroll: point(px(0.0), px(0.0)),
@@ -87,22 +95,13 @@ impl Editor {
             search_revision: None,
             diagnostics: Vec::new(),
             diagnostic_revision: None,
-            language: ligature_syntax::Language::Tex,
+            language,
             syntax: None,
             structure: ligature_tex::Document::default(),
             parse_requested: None,
             parse_task: None,
         };
         editor.queue_parse(cx);
-        editor
-    }
-
-    pub fn read_only(buffer: Buffer, cx: &mut Context<Self>) -> Self {
-        let mut editor = Self {
-            read_only: true,
-            ..Self::new(buffer, cx)
-        };
-        editor.set_language(ligature_syntax::Language::Plain, cx);
         editor
     }
 
@@ -1015,6 +1014,18 @@ mod tests {
     use super::*;
     use gpui::{AppContext, TestAppContext};
     use ligature_buffer::Buffer;
+
+    #[test]
+    fn read_only_logs_do_not_schedule_syntax_parsing() {
+        let mut cx = TestAppContext::single();
+        let editor = cx.new(|cx| Editor::read_only(Buffer::from_text("\\section{Build output}"), cx));
+        editor.read_with(&cx, |editor, _| {
+            assert!(editor.read_only);
+            assert_eq!(editor.language, ligature_syntax::Language::Plain);
+            assert!(editor.parse_requested.is_none());
+            assert!(editor.parse_task.is_none());
+        });
+    }
 
     #[test]
     fn background_highlighting_preserves_selection_scroll_and_history() {

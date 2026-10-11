@@ -209,6 +209,13 @@ fn month_strings() -> BTreeMap<String, String> {
 
 fn expand(parts: &[Part], strings: &BTreeMap<String, Vec<Part>>, visiting: &mut Vec<String>, expanded: &BTreeMap<String, String>) -> String {
     let mut result = String::new();
+    append_expansion(parts, strings, visiting, expanded, &mut result);
+    result
+}
+
+fn append_expansion(
+    parts: &[Part], strings: &BTreeMap<String, Vec<Part>>, visiting: &mut Vec<String>, expanded: &BTreeMap<String, String>, result: &mut String,
+) {
     for part in parts {
         match part {
             Part::Literal(value) => result.push_str(value),
@@ -219,7 +226,7 @@ fn expand(parts: &[Part], strings: &BTreeMap<String, Vec<Part>>, visiting: &mut 
                     result.push_str(value);
                 } else if let Some(value) = strings.get(key) {
                     visiting.push(key.clone());
-                    result.push_str(&expand(value, strings, visiting, expanded));
+                    append_expansion(value, strings, visiting, expanded, result);
                     visiting.pop();
                 } else {
                     result.push_str(key);
@@ -227,7 +234,6 @@ fn expand(parts: &[Part], strings: &BTreeMap<String, Vec<Part>>, visiting: &mut 
             }
         }
     }
-    result
 }
 
 struct Parser<'a> {

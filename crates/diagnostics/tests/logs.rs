@@ -43,6 +43,19 @@ fn file_line_error_style_messages_carry_their_own_location() {
 }
 
 #[test]
+fn locations_skip_long_colon_sequences_and_invalid_line_numbers() {
+    let prefix = "segment:".repeat(4096);
+    let diagnostics = parse(&format!(
+        "error: {prefix}main.tex:+12: Located.\nerror: main.tex:999999999999999999999999999999: Unlocated."
+    ));
+    assert_eq!(diagnostics[0].path, Some(PathBuf::from(format!("/project/{prefix}main.tex"))));
+    assert_eq!(diagnostics[0].range, lines(12, 12));
+    assert_eq!(diagnostics[0].message, "Located.");
+    assert_eq!(diagnostics[1].path, None);
+    assert_eq!(diagnostics[1].range, None);
+}
+
+#[test]
 fn engine_prefixed_errors_and_warnings_have_the_right_severity() {
     let diagnostics = parse("error: main.tex:4: Runaway argument.\nwarning: main.tex:9: Font shape unavailable.\nerror: resource missing\n");
     assert_eq!(

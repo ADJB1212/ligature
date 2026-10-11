@@ -63,7 +63,7 @@ pub struct Raster {
 #[derive(Clone, Debug)]
 pub struct Document {
     bytes: Arc<[u8]>,
-    pages: Vec<Page>,
+    pages: Arc<[Page]>,
 }
 
 impl Document {
@@ -74,7 +74,7 @@ impl Document {
 
     pub fn from_bytes(bytes: Arc<[u8]>) -> Result<Self, String> {
         let pages = backend::pages(&bytes)?;
-        Ok(Self { bytes, pages })
+        Ok(Self { bytes, pages: pages.into() })
     }
 
     pub fn pages(&self) -> &[Page] {
@@ -198,6 +198,9 @@ mod tests {
         assert_eq!(document.pages().len(), 2);
         assert_eq!(document.pages()[1].rotation, 90);
         assert_eq!(document.pages()[1].display_size(), (300.0, 200.0));
+        let cloned = document.clone();
+        assert!(Arc::ptr_eq(&document.pages, &cloned.pages));
+        assert!(Arc::ptr_eq(&document.bytes, &cloned.bytes));
         let raster = document.render(0, 1.0).unwrap();
         assert_eq!((raster.width, raster.height), (200, 300));
         let pixel = |x: usize, y: usize| &raster.bgra[(y * 200 + x) * 4..(y * 200 + x) * 4 + 4];
