@@ -4,4 +4,4 @@ mod state;
 mod view;
 
 pub use state::{EditorState, Indentation, LineEnding, Movement};
-pub use view::{Copy, Cut, Editor, Paste, Redo, SelectAll, Undo, init};
+pub use view::{Complete, Copy, Cut, Editor, Paste, Redo, SelectAll, ShowHover, Undo, init};

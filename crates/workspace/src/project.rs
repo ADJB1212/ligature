@@ -128,6 +128,10 @@ impl Workspace {
             });
         self.editor.update(cx, |editor, cx| {
             editor.set_language(language, cx);
+            editor.set_completion_keys(
+                self.semantic_ui.index.labels.keys().cloned().collect(),
+                self.semantic_ui.index.bibliography.entries.keys().cloned().collect(),
+            );
             configure(editor, &self.settings, cx);
         });
     }

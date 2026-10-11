@@ -9,5 +9,15 @@ license.workspace = true
 publish = false
 description = "Language-server process lifecycle, protocol transport, and request/notification handling"
 
+[dependencies]
+ligature-completion.workspace = true
+ligature-diagnostics.workspace = true
+serde = { version = "1", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+url = { version = "2", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+tempfile = { version = "3", default-features = false }
+
 [lints]
 workspace = true

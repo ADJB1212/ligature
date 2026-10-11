@@ -11,6 +11,7 @@ pub use install::{BundleInstallProgress, install_upstream_bundle, installation_d
 pub const ENGINE_VERSION: &str = env!("LIGATURE_TECTONIC_VERSION");
 pub const BUILT_RESOURCE_DIRECTORY: &str = env!("LIGATURE_TECTONIC_RESOURCES");
 pub const BUNDLE_REVISION: &str = "1";
+pub const LANGUAGE_SERVER_VERSION: &str = "5.26.0";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BundledResources {
@@ -22,6 +23,14 @@ pub struct BundledResources {
 }
 
 impl BundledResources {
+    pub fn language_server(&self) -> Result<PathBuf, String> {
+        let path = self.executable.with_file_name(if cfg!(windows) { "texlab.exe" } else { "texlab" });
+        if !path.is_file() {
+            return Err(installation_error(&path, "missing bundled Texlab executable"));
+        }
+        Ok(path)
+    }
+
     pub fn discover() -> Result<Self, String> {
         let executable = std::env::current_exe().map_err(|error| format!("Could not locate Ligature: {error}"))?;
         let cache = dirs::cache_dir()

@@ -9,5 +9,8 @@ license.workspace = true
 publish = false
 description = "Completion candidates, ranking, and filtering"
 
+[dependencies]
+ligature-buffer.workspace = true
+
 [lints]
 workspace = true

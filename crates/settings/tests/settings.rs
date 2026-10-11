@@ -24,6 +24,19 @@ fn defaults_are_valid_and_stable() {
 }
 
 #[test]
+fn language_settings_merge_defaults_and_round_trip_without_external_paths() {
+    let (settings, errors) = load(r#"{"language_server":{"enabled":false,"hover":false}}"#);
+    assert!(errors.is_empty());
+    assert!(!settings.language_server.enabled && !settings.language_server.hover);
+    assert!(settings.language_server.completion);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join(PROJECT_FILE);
+    settings.save(&path).unwrap();
+    assert_eq!(Settings::load(&path), (settings, Vec::new()));
+    assert!(!load(r#"{"language_server":{"executable":"external"}}"#).1.is_empty());
+}
+
+#[test]
 fn empty_object_and_missing_file_both_produce_defaults_without_errors() {
     assert_eq!(load("{}"), (Settings::default(), Vec::new()));
     let directory = tempfile::tempdir().unwrap();

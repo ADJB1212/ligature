@@ -113,6 +113,39 @@ pub struct Diagnostic {
     pub range: Option<SourceRange>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct Store {
+    entries: BTreeMap<(PathBuf, Provider), Vec<Diagnostic>>,
+}
+
+impl Store {
+    pub fn replace(&mut self, path: PathBuf, provider: Provider, mut diagnostics: Vec<Diagnostic>) {
+        for diagnostic in &mut diagnostics {
+            diagnostic.path = Some(path.clone());
+            diagnostic.provider = provider.clone();
+        }
+        if diagnostics.is_empty() {
+            self.entries.remove(&(path, provider));
+        } else {
+            self.entries.insert((path, provider), diagnostics);
+        }
+    }
+
+    pub fn document(&self, path: &std::path::Path, provider: &Provider) -> &[Diagnostic] {
+        self.entries.get(&(path.into(), provider.clone())).map_or(&[], Vec::as_slice)
+    }
+
+    pub fn clear_document(&mut self, path: &std::path::Path) {
+        self.entries.retain(|(source, _), _| source != path);
+    }
+    pub fn clear_provider(&mut self, provider: &Provider) {
+        self.entries.retain(|(_, source), _| source != provider);
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &Diagnostic> {
+        self.entries.values().flatten()
+    }
+}
+
 pub fn grouped(diagnostics: &[Diagnostic]) -> BTreeMap<(Option<PathBuf>, Severity), Vec<&Diagnostic>> {
     let mut groups = BTreeMap::new();
     for diagnostic in diagnostics {
@@ -127,6 +160,34 @@ pub fn grouped(diagnostics: &[Diagnostic]) -> BTreeMap<(Option<PathBuf>, Severit
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacements_and_clears_preserve_other_documents_and_providers() {
+        let mut store = Store::default();
+        let server = Provider::LanguageServer("Texlab".into());
+        let build = Provider::Build(BuildId(1));
+        let diagnostic = |message: &str| Diagnostic {
+            severity: Severity::Warning,
+            provider: server.clone(),
+            message: message.into(),
+            path: None,
+            range: None,
+        };
+        let first = PathBuf::from("/p/first.tex");
+        let second = PathBuf::from("/p/second.tex");
+        store.replace(first.clone(), server.clone(), vec![diagnostic("old")]);
+        store.replace(first.clone(), build.clone(), vec![diagnostic("build")]);
+        store.replace(second, server.clone(), vec![diagnostic("other")]);
+        store.replace(first.clone(), server.clone(), vec![diagnostic("new")]);
+        assert_eq!(store.document(&first, &server)[0].message, "new");
+        assert_eq!(store.document(&first, &build)[0].provider, build);
+        store.replace(first.clone(), server.clone(), Vec::new());
+        assert_eq!(store.iter().count(), 2);
+        store.clear_provider(&server);
+        assert_eq!(store.iter().count(), 1);
+        store.clear_document(&first);
+        assert_eq!(store.iter().count(), 0);
+    }
 
     #[test]
     fn indexed_ranges_match_scanned_ranges() {

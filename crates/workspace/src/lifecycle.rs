@@ -397,6 +397,7 @@ pub(super) async fn save(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowConte
         workspace.queue_semantics(cx);
         workspace.start_watching(window, cx);
         workspace.update_membership();
+        workspace.language_saved(cx);
     })
     .map_err(|err| err.to_string())?;
     Ok(true)

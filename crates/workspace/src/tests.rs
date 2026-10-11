@@ -18,6 +18,7 @@ fn workspace_with_template(cx: &mut TestAppContext) -> (WindowHandle<Workspace>,
     cx.update(init);
     let window = cx.add_window(Workspace::new);
     let root = window.root(cx).unwrap();
+    root.update(cx, |workspace, _| workspace.settings.language_server.enabled = false);
     cx.update_window(window.into(), |_, window, cx| {
         window.draw(cx).clear(cx);
     })
@@ -48,6 +49,28 @@ fn outline_navigation_preserves_untitled_identity_and_dirty_state() {
         assert!(workspace.dirty(cx));
         assert_eq!(workspace.editor.read(cx).state().selected_text(), "\\subsection{Child}");
     });
+}
+
+#[test]
+fn tab_changes_dismiss_completion_and_reject_previous_tab_responses() {
+    let mut cx = TestAppContext::single();
+    cx.update(ligature_editor::init);
+    let (window, root) = workspace(&mut cx);
+    type_text(&mut cx, &root, "\\sec");
+    let target = root.read_with(&cx, |workspace, cx| workspace.editor.read(cx).completion_target().unwrap());
+    cx.update_window(window.into(), |_, window, cx| {
+        root.update(cx, |workspace, cx| {
+            workspace.replace_document(None, window, cx);
+            assert!(
+                !workspace
+                    .editor
+                    .update(cx, |editor, cx| editor.publish_completion(target, Vec::new(), cx))
+            );
+            workspace.switch_tab(0, window, cx);
+            assert!(workspace.editor.read(cx).completion_target().is_none());
+        });
+    })
+    .unwrap();
 }
 
 #[test]

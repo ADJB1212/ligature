@@ -4,6 +4,7 @@ use gpui::{App, Bounds, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOpt
 use ligature_core::APP_NAME;
 use ligature_workspace::{Close, New, NextTab, Open, OpenProject, PreviousTab, Quit, Save, SaveAs, SelectRoot, ToggleBuildOutput, Workspace};
 use ligature_workspace::{Find, FindInProject, FindNext, FindPrevious, Replace};
+use ligature_workspace::{RestartLanguageServer, ToggleLanguageServer};
 
 /// Start the native event loop and open the workspace window.
 pub fn run() {
@@ -45,6 +46,13 @@ pub fn run() {
                 MenuItem::separator(),
                 MenuItem::action("Find Next", FindNext),
                 MenuItem::action("Find Previous", FindPrevious),
+            ]),
+            Menu::new("Language").items([
+                MenuItem::action("Complete", ligature_editor::Complete),
+                MenuItem::action("Show Hover", ligature_editor::ShowHover),
+                MenuItem::separator(),
+                MenuItem::action("Language Server Status", ToggleLanguageServer),
+                MenuItem::action("Restart Language Server", RestartLanguageServer),
             ]),
         ]);
         cx.on_window_closed(|cx, _| {

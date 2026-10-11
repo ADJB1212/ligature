@@ -8,6 +8,7 @@ use std::{
 };
 
 const ENGINE_VERSION: &str = "0.17.0";
+const TEXLAB_REVISION: &str = "45c3ced6790b508a12a2aab1938e58023173017e";
 
 mod build_storage;
 
@@ -23,7 +24,7 @@ fn main() {
         println!("cargo::rerun-if-env-changed={name}");
     }
     if let Err(error) = build_engine() {
-        panic!("Could not build bundled Tectonic: {error}");
+        panic!("Could not stage bundled tools and TeX resources: {error}");
     }
 }
 
@@ -113,6 +114,7 @@ fn build_engine() -> Result<(), String> {
     )?;
     sign(&executable)?;
     run(Command::new(&executable).arg("--version"))?;
+    stage_language_server(&storage, &resources, &target)?;
     stage_resources(&resources)?;
     build_storage::publish_resources(&resources, &storage).map_err(|error| error.to_string())?;
     let resources = storage.join("resources");
@@ -123,6 +125,63 @@ fn build_engine() -> Result<(), String> {
     }
     println!("cargo::rustc-env=LIGATURE_TECTONIC_VERSION={ENGINE_VERSION}");
     println!("cargo::rustc-env=LIGATURE_TECTONIC_RESOURCES={}", resources.display());
+    Ok(())
+}
+
+fn stage_language_server(storage: &Path, resources: &Path, target: &str) -> Result<(), String> {
+    let source = storage.join("texlab-5.26.0-source");
+    let install = storage.join("texlab-5.26.0-install");
+    if !source.join(".git").exists() {
+        fs::create_dir_all(&source).map_err(|error| error.to_string())?;
+        run(Command::new("git").arg("init").arg(&source))?;
+    }
+    if !source.join("Cargo.toml").exists() {
+        run(Command::new("git")
+            .arg("-C")
+            .arg(&source)
+            .args(["fetch", "--depth=1", "https://github.com/latex-lsp/texlab.git", TEXLAB_REVISION]))?;
+        run(Command::new("git").arg("-C").arg(&source).args(["checkout", "--detach", TEXLAB_REVISION]))?;
+    }
+    let executable = install.join("bin/texlab");
+    if !executable.is_file() {
+        let mut cargo = Command::new(env::var_os("CARGO").ok_or("Missing CARGO")?);
+        cargo
+            .current_dir(&source)
+            .args(["install", "--path"])
+            .arg(source.join("crates/texlab"))
+            .args(["--locked", "--target", target, "--root"])
+            .arg(&install)
+            .arg("--target-dir")
+            .arg(storage.join("texlab-build"))
+            .arg("--jobs")
+            .arg(env::var_os("NUM_JOBS").unwrap_or_else(|| "1".into()));
+        for name in [
+            "CARGO_MAKEFLAGS",
+            "MAKEFLAGS",
+            "MFLAGS",
+            "RUSTFLAGS",
+            "CARGO_ENCODED_RUSTFLAGS",
+            "RUSTC_WORKSPACE_WRAPPER",
+            "CLIPPY_ARGS",
+        ] {
+            cargo.env_remove(name);
+        }
+        run(&mut cargo)?;
+    }
+    let staged = resources.join("bin/texlab");
+    copy_executable(&executable, &staged)?;
+    sign(&staged)?;
+    run(Command::new(&staged).arg("--version"))?;
+    let licenses = resources.join("licenses");
+    fs::create_dir_all(&licenses).map_err(|error| error.to_string())?;
+    fs::copy(source.join("LICENSE"), licenses.join("Texlab-GPL-3.0.txt")).map_err(|error| error.to_string())?;
+    run(Command::new("git")
+        .arg("-C")
+        .arg(&source)
+        .args(["archive", "--format=tar", "--output"])
+        .arg(licenses.join("Texlab-source.tar"))
+        .arg(TEXLAB_REVISION))?;
+    fs::write(licenses.join("Texlab-NOTICE.txt"), format!("Texlab 5.26.0\nCopyright Eric Foerster and Patrick Foerster\nGPL-3.0\nSource: https://github.com/latex-lsp/texlab\nRevision: {TEXLAB_REVISION}\n")).map_err(|error| error.to_string())?;
     Ok(())
 }
 

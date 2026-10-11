@@ -14,11 +14,17 @@ use crate::{
     state::{byte_offset, utf16_offset},
 };
 
+#[path = "assistance.rs"]
+mod assistance;
+pub use assistance::{Complete, ShowHover};
+
 actions!(ligature_editor, [SelectAll, Copy, Cut, Paste, Undo, Redo]);
 
 pub fn init(cx: &mut App) {
     let modifier = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
     cx.bind_keys([
+        KeyBinding::new("ctrl-space", Complete, Some("LigatureEditor")),
+        KeyBinding::new("shift-f1", ShowHover, Some("LigatureEditor")),
         KeyBinding::new(&format!("{modifier}-a"), SelectAll, Some("LigatureEditor")),
         KeyBinding::new(&format!("{modifier}-c"), Copy, Some("LigatureEditor")),
         KeyBinding::new(&format!("{modifier}-x"), Cut, Some("LigatureEditor")),
@@ -59,6 +65,7 @@ pub struct Editor {
     structure: ligature_tex::Document,
     parse_requested: Option<(ligature_buffer::DocumentId, ligature_buffer::Revision, ligature_syntax::Language)>,
     parse_task: Option<Task<()>>,
+    assistance: assistance::Assistance,
 }
 
 impl Editor {
@@ -100,13 +107,16 @@ impl Editor {
             structure: ligature_tex::Document::default(),
             parse_requested: None,
             parse_task: None,
+            assistance: assistance::Assistance::default(),
         };
         editor.queue_parse(cx);
+        editor.refresh_assistance(cx);
         editor
     }
 
     pub fn set_language(&mut self, language: ligature_syntax::Language, cx: &mut Context<Self>) {
         if self.language != language {
+            self.dismiss_assistance();
             self.language = language;
             self.syntax = None;
             self.structure = ligature_tex::Document::default();
@@ -165,6 +175,7 @@ impl Editor {
                 {
                     editor.syntax = Some(snapshot);
                     editor.structure = structure;
+                    editor.suppress_opaque_assistance();
                     cx.notify();
                 }
             })
@@ -188,23 +199,22 @@ impl Editor {
     pub fn set_diagnostics<'a>(
         &mut self, diagnostics: impl IntoIterator<Item = &'a ligature_diagnostics::Diagnostic>, stale: bool, cx: &mut Context<Self>,
     ) {
+        let diagnostics: Vec<_> = diagnostics.into_iter().collect();
+        self.assistance.build_messages = if stale {
+            Vec::new()
+        } else {
+            diagnostics
+                .iter()
+                .filter_map(|diagnostic| Some((self.diagnostic_byte_range(diagnostic)?, diagnostic.message.clone())))
+                .collect()
+        };
         let ranges = if stale {
             Vec::new()
         } else {
             diagnostics
                 .into_iter()
                 .filter_map(|diagnostic| {
-                    let range = diagnostic.range.as_ref()?.byte_range_with_lines(self.state.text(), |line| {
-                        (line <= self.state.line_count()).then(|| {
-                            let start = self.state.line_range(line - 1).start;
-                            let end = if line < self.state.line_count() {
-                                self.state.line_range(line).start - 1
-                            } else {
-                                self.state.text().len()
-                            };
-                            start..end
-                        })
-                    })?;
+                    let range = self.diagnostic_byte_range(diagnostic)?;
                     Some((range, diagnostic.severity))
                 })
                 .collect()
@@ -221,7 +231,23 @@ impl Editor {
         self.scroll
     }
 
+    fn diagnostic_byte_range(&self, diagnostic: &ligature_diagnostics::Diagnostic) -> Option<Range<usize>> {
+        diagnostic.range.as_ref()?.byte_range_with_lines(self.state.text(), |line| {
+            (line > 0 && line <= self.state.line_count()).then(|| {
+                let start = self.state.line_range(line - 1).start;
+                let end = if line < self.state.line_count() {
+                    self.state.line_range(line).start - 1
+                } else {
+                    self.state.text().len()
+                };
+                start..end
+            })
+        })
+    }
+
     pub fn set_buffer(&mut self, buffer: Buffer, cx: &mut Context<Self>) {
+        self.dismiss_assistance();
+        self.set_server_diagnostics(Vec::new(), cx);
         self.state = EditorState::new(buffer);
         self.scroll = point(px(0.0), px(0.0));
         self.preferred_x = None;
@@ -231,6 +257,7 @@ impl Editor {
         self.diagnostic_revision = None;
         self.refresh_search();
         self.queue_parse(cx);
+        self.refresh_assistance(cx);
         cx.notify();
     }
 
@@ -240,6 +267,7 @@ impl Editor {
         self.reveal_caret = true;
         self.refresh_search();
         self.queue_parse(cx);
+        self.refresh_assistance(cx);
         cx.notify();
         result
     }
@@ -334,6 +362,7 @@ impl Editor {
         self.reveal_caret = true;
         self.refresh_search();
         self.queue_parse(cx);
+        self.refresh_assistance(cx);
         window.focus(&self.focus, cx);
         self.restart_blink(cx);
         cx.notify();
@@ -372,6 +401,7 @@ impl Editor {
                 self.restart_blink(cx);
             }
         } else {
+            self.dismiss_assistance();
             self.blink = None;
             self.blink_epoch += 1;
             self.caret_on = false;
@@ -379,6 +409,9 @@ impl Editor {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.assistance_key(event, window, cx) {
+            return;
+        }
         let modifiers = event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
         if self.state.marked_range().is_some() {
@@ -544,6 +577,7 @@ impl Editor {
     }
 
     fn mouse_down(&mut self, event: &gpui::MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_assistance();
         self.state.commit_composition();
         let offset = self.hit_test(event.position, window);
         if event.click_count >= 3 {
@@ -635,7 +669,9 @@ impl Editor {
             cx.stop_propagation();
             return;
         }
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+            && !self.replace_snippet(self.state.selection(), &text)
+        {
             self.state.insert(&text, false);
         }
         self.preferred_x = None;
@@ -727,7 +763,9 @@ impl EntityInputHandler for Editor {
             return;
         }
         let range = range.map(|range| self.byte_range(range));
-        self.state.commit_text(range, text);
+        if !self.replace_snippet(range.clone().unwrap_or_else(|| self.state.selection()), text) {
+            self.state.commit_text(range, text);
+        }
         self.preferred_x = None;
         self.changed(window, cx);
     }
@@ -871,8 +909,14 @@ impl Editor {
                         .paint(point(origin.x + *x, origin.y), self.line_height, gpui::TextAlign::Left, None, window, cx)
                         .expect("editor text painting failed");
                 }
-                if self.diagnostic_revision == Some(self.state.buffer().revision()) && marked.is_none() {
-                    for (range, severity) in &self.diagnostics {
+                if marked.is_none() {
+                    for (range, severity) in self
+                        .diagnostics
+                        .iter()
+                        .filter(|_| self.diagnostic_revision == Some(self.state.buffer().revision()))
+                        .cloned()
+                        .chain(self.server_diagnostic_ranges().iter().cloned())
+                    {
                         if (range.start < line_end && range.end > line.range.start)
                             || (range.is_empty() && range.start >= line.range.start && range.start <= line.range.end)
                         {
@@ -883,7 +927,7 @@ impl Editor {
                                     point(origin.x + start, origin.y + self.line_height - px(2.0)),
                                     size((end - start).max(px(4.0)), px(1.0)),
                                 ),
-                                if *severity == ligature_diagnostics::Severity::Error {
+                                if severity == ligature_diagnostics::Severity::Error {
                                     colors.error
                                 } else {
                                     colors.muted_text
@@ -960,6 +1004,7 @@ fn reveal(scroll: Pixels, viewport: Pixels, position: Pixels, extent: Pixels) ->
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_blink(window, cx);
+        let assistance = self.render_assistance(window, cx);
         let entity = cx.entity();
         let paint_entity = entity.clone();
         div()
@@ -968,6 +1013,7 @@ impl Render for Editor {
             .key_context("LigatureEditor")
             .track_focus(&self.focus)
             .size_full()
+            .relative()
             .overflow_hidden()
             .cursor(CursorStyle::IBeam)
             .bg(colors().background)
@@ -982,6 +1028,10 @@ impl Render for Editor {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
+            .when(!self.read_only && self.language != ligature_syntax::Language::Plain, |view| {
+                view.on_action(cx.listener(Self::complete))
+            })
+            .when(self.hover_available(), |view| view.on_action(cx.listener(Self::show_hover)))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.dragging = false))
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, _| this.dragging = false))
@@ -1006,6 +1056,7 @@ impl Render for Editor {
                 )
                 .size_full(),
             )
+            .child(assistance)
     }
 }
 

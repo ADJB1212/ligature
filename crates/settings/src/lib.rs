@@ -136,7 +136,26 @@ pub struct Settings {
     pub font: FontSettings,
     pub indentation: IndentationSettings,
     pub build: BuildSettings,
+    pub language_server: LanguageServerSettings,
     pub root_document: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LanguageServerSettings {
+    pub enabled: bool,
+    pub completion: bool,
+    pub hover: bool,
+}
+
+impl Default for LanguageServerSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            completion: true,
+            hover: true,
+        }
+    }
 }
 impl Settings {
     pub fn validate(&mut self) -> Vec<String> {

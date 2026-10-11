@@ -1,6 +1,7 @@
 //! Top-level window views, document lifecycle, pane layout, and feature coordination.
 
 mod builds;
+mod language;
 mod lifecycle;
 mod project;
 mod resources;
@@ -54,7 +55,9 @@ actions!(
         ShowInPreview,
         ToggleBuildOutput,
         ToggleOutline,
-        GoToDefinition
+        GoToDefinition,
+        RestartLanguageServer,
+        ToggleLanguageServer
     ]
 );
 
@@ -142,6 +145,7 @@ pub struct Workspace {
     build_log: Entity<Editor>,
     build_output_height: Pixels,
     semantic_ui: semantics::SemanticUi,
+    language_ui: language::LanguageUi,
 }
 
 struct Tab {
@@ -205,8 +209,10 @@ impl Workspace {
             build_log,
             build_output_height: px(240.0),
             semantic_ui: semantics::SemanticUi::default(),
+            language_ui: language::LanguageUi::default(),
         };
         workspace.queue_semantics(cx);
+        workspace.queue_language_server(window, cx);
         workspace
     }
 
@@ -229,6 +235,7 @@ impl Workspace {
     }
 
     fn replace_document(&mut self, loaded: Option<LoadedFile>, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, _| editor.dismiss_assistance());
         let reuse_starter = loaded.is_some()
             && self.tabs.len() == 1
             && self.document.as_ref().is_some_and(|document| document.path.is_none())
@@ -323,6 +330,7 @@ impl Workspace {
         if index == self.active_tab || index >= self.tabs.len() {
             return;
         }
+        self.editor.update(cx, |editor, _| editor.dismiss_assistance());
         self.park_active();
         self.active_tab = index;
         self.restore_active(window, cx);
@@ -497,6 +505,11 @@ impl Render for Workspace {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &GoToDefinition, window, cx| this.go_to_definition(window, cx)))
+            .on_action(cx.listener(|this, _: &RestartLanguageServer, _, cx| this.restart_language_server(cx)))
+            .on_action(cx.listener(|this, _: &ToggleLanguageServer, _, cx| {
+                this.language_ui.visible = !this.language_ui.visible;
+                cx.notify();
+            }))
             .when(!unavailable, |view| {
                 view.on_action(cx.listener(|this, _: &Find, window, cx| this.show_search(false, false, window, cx)))
                     .on_action(cx.listener(|this, _: &Replace, window, cx| this.show_search(false, true, window, cx)))
@@ -510,6 +523,7 @@ impl Render for Workspace {
                     .on_action(cx.listener(|this, _: &FindPrevious, window, cx| this.navigate_search(true, window, cx)))
             })
             .child(self.render_toolbar(dirty, &name, unavailable, cx))
+            .when(self.language_ui.visible, |view| view.child(self.render_language_server(cx)))
             .when(self.bundle_ui.visible, |view| view.child(self.render_resources(cx)))
             .when_some(self.error.clone(), |view, error| view.child(inline_error(error)))
             .children(self.settings_errors.iter().map(|error| inline_error(error.clone())))
@@ -654,6 +668,14 @@ impl Workspace {
                         if this.bundle_ui.visible {
                             this.check_installed_bundle(window, cx);
                         }
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("language-server", "Language Server")
+                    .selected(self.language_ui.visible)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.language_ui.visible = !this.language_ui.visible;
                         cx.notify();
                     })),
             )

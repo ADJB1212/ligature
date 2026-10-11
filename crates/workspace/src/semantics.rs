@@ -181,6 +181,12 @@ impl Workspace {
                         .update(cx, |workspace, cx| {
                             if workspace.semantic_version(cx) == version && workspace.semantic_ui.index.as_ref() != &index {
                                 workspace.semantic_ui.index = Arc::new(index);
+                                let labels: Vec<_> = workspace.semantic_ui.index.labels.keys().cloned().collect();
+                                let citations: Vec<_> = workspace.semantic_ui.index.bibliography.entries.keys().cloned().collect();
+                                for tab in &workspace.tabs {
+                                    let editor = tab.as_ref().map_or(&workspace.editor, |tab| &tab.editor);
+                                    editor.update(cx, |editor, _| editor.set_completion_keys(labels.clone(), citations.clone()));
+                                }
                                 cx.notify();
                             }
                         })
