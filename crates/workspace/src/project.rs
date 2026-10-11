@@ -280,12 +280,11 @@ impl Workspace {
             .flex_shrink_0()
             .overflow_y_scroll()
             .px(spacing::medium())
-            .py(spacing::small())
+            .py(spacing::large())
             .bg(colors.background)
-            .child(caption("PROJECT"))
-            .child(project.root.file_name().unwrap_or_default().to_string_lossy().into_owned())
+            .child(caption("Files"))
             .when_some(project.root_document.as_ref(), |view, path| {
-                view.child(caption(format!("Root {}", path.display())))
+                view.child(caption(format!("Root: {}", path.file_name().unwrap_or_default().to_string_lossy())))
             })
             .child(div().h(spacing::medium()))
             .children(rows.into_iter().enumerate().map(|(index, (path, depth, directory, error))| {

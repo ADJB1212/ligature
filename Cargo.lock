@@ -3401,6 +3401,7 @@ name = "ligature-editor"
 version = "0.0.1"
 dependencies = [
  "gpui-ce",
+ "gpui_ce_platform",
  "ligature-buffer",
  "ligature-completion",
  "ligature-diagnostics",

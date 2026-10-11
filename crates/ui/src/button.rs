@@ -63,7 +63,7 @@ impl RenderOnce for Button {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let colors = colors();
         let quiet = matches!(self.style, ButtonStyle::Quiet);
-        let filled = matches!(self.style, ButtonStyle::Filled) || (self.selected && matches!(self.style, ButtonStyle::Ghost));
+        let filled = matches!(self.style, ButtonStyle::Filled);
         let (background, foreground) = if self.disabled {
             (
                 if filled { colors.disabled_surface } else { gpui::transparent_black() },
@@ -72,7 +72,7 @@ impl RenderOnce for Button {
         } else if filled {
             (colors.accent, colors.on_accent)
         } else if self.selected {
-            (colors.text.opacity(0.14), colors.text)
+            (colors.text.opacity(0.08), colors.text)
         } else {
             (gpui::transparent_black(), if quiet { colors.muted_text } else { colors.text })
         };
@@ -85,9 +85,9 @@ impl RenderOnce for Button {
             .h(if quiet { spacing::compact_height() } else { spacing::control_height() })
             .px(if quiet { spacing::medium() } else { spacing::large() })
             .rounded(spacing::radius())
-            .border_2()
+            .border_1()
             .border_color(gpui::transparent_black())
-            .text_size(if quiet { typography::small_size() } else { typography::control_size() })
+            .text_size(typography::control_size())
             .line_height(typography::line_height())
             .bg(background)
             .text_color(foreground)
@@ -100,14 +100,14 @@ impl RenderOnce for Button {
                         if filled {
                             style.bg(colors.accent_hover)
                         } else {
-                            style.bg(colors.hover).text_color(colors.text).border_color(colors.text.opacity(0.22))
+                            style.bg(colors.hover).text_color(colors.text)
                         }
                     })
                     .active(|style| {
                         if filled {
                             style.bg(colors.accent_press)
                         } else {
-                            style.bg(colors.press).text_color(colors.text).border_color(colors.text.opacity(0.4))
+                            style.bg(colors.press).text_color(colors.text)
                         }
                     })
                     .focus(|style| style.border_color(colors.focus))

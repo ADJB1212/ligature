@@ -2,9 +2,11 @@
 
 use gpui::{App, Bounds, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOptions, prelude::*, px, size};
 use ligature_core::APP_NAME;
-use ligature_workspace::{Close, New, NextTab, Open, OpenProject, PreviousTab, Quit, Save, SaveAs, SelectRoot, ToggleBuildOutput, Workspace};
-use ligature_workspace::{Find, FindInProject, FindNext, FindPrevious, Replace};
-use ligature_workspace::{RestartLanguageServer, ToggleLanguageServer};
+use ligature_workspace::{
+    Build, CancelBuild, Close, Find, FindInProject, FindNext, FindPrevious, FitPage, FitWidth, GoToDefinition, New, NextTab, Open, OpenProject,
+    PreviousTab, Quit, Replace, RestartLanguageServer, Save, SaveAs, SelectRoot, ShowInPreview, ToggleBuildOutput, ToggleLanguageServer,
+    ToggleOutline, ToggleProject, ToggleTexResources, Workspace, ZoomIn, ZoomOut,
+};
 
 /// Start the native event loop and open the workspace window.
 pub fn run() {
@@ -20,7 +22,11 @@ pub fn run() {
             }
         });
         cx.set_menus(vec![
-            Menu::new(APP_NAME).items([MenuItem::action("Quit Ligature", Quit)]),
+            Menu::new(APP_NAME).items([
+                MenuItem::action("TeX Resources...", ToggleTexResources),
+                MenuItem::separator(),
+                MenuItem::action("Quit Ligature", Quit),
+            ]),
             Menu::new("File").items([
                 MenuItem::action("New", New),
                 MenuItem::action("Open...", Open),
@@ -30,30 +36,53 @@ pub fn run() {
                 MenuItem::action("Save As...", SaveAs),
                 MenuItem::separator(),
                 MenuItem::action("Close", Close),
-                MenuItem::separator(),
-                MenuItem::action("Set Active Document as Project Root", SelectRoot),
             ]),
-            Menu::new("Window").items([
-                MenuItem::action("Next Tab", NextTab),
-                MenuItem::action("Previous Tab", PreviousTab),
+            Menu::new("Edit").items([
+                MenuItem::action("Undo", ligature_editor::Undo),
+                MenuItem::action("Redo", ligature_editor::Redo),
                 MenuItem::separator(),
-                MenuItem::action("Toggle Build Output", ToggleBuildOutput),
-            ]),
-            Menu::new("Search").items([
+                MenuItem::action("Cut", ligature_editor::Cut),
+                MenuItem::action("Copy", ligature_editor::Copy),
+                MenuItem::action("Paste", ligature_editor::Paste),
+                MenuItem::action("Select All", ligature_editor::SelectAll),
+                MenuItem::separator(),
                 MenuItem::action("Find...", Find),
                 MenuItem::action("Replace...", Replace),
                 MenuItem::action("Find in Project...", FindInProject),
-                MenuItem::separator(),
                 MenuItem::action("Find Next", FindNext),
                 MenuItem::action("Find Previous", FindPrevious),
-            ]),
-            Menu::new("Language").items([
+                MenuItem::separator(),
                 MenuItem::action("Complete", ligature_editor::Complete),
-                MenuItem::action("Show Hover", ligature_editor::ShowHover),
+            ]),
+            Menu::new("View").items([
+                MenuItem::action("Toggle Project Sidebar", ToggleProject),
+                MenuItem::action("Toggle Outline", ToggleOutline),
+                MenuItem::action("Toggle Build Output", ToggleBuildOutput),
+                MenuItem::separator(),
+                MenuItem::submenu(Menu::new("PDF Zoom").items([
+                    MenuItem::action("Zoom In", ZoomIn),
+                    MenuItem::action("Zoom Out", ZoomOut),
+                    MenuItem::separator(),
+                    MenuItem::action("Fit Width", FitWidth),
+                    MenuItem::action("Fit Page", FitPage),
+                ])),
                 MenuItem::separator(),
                 MenuItem::action("Language Server Status", ToggleLanguageServer),
                 MenuItem::action("Restart Language Server", RestartLanguageServer),
             ]),
+            Menu::new("Build").items([
+                MenuItem::action("Build Document", Build),
+                MenuItem::action("Cancel Build", CancelBuild),
+                MenuItem::separator(),
+                MenuItem::action("Set Active Document as Project Root", SelectRoot),
+            ]),
+            Menu::new("Navigate").items([
+                MenuItem::action("Go to Definition", GoToDefinition),
+                MenuItem::action("Show Hover", ligature_editor::ShowHover),
+                MenuItem::separator(),
+                MenuItem::action("Show in PDF", ShowInPreview),
+            ]),
+            Menu::new("Window").items([MenuItem::action("Next Tab", NextTab), MenuItem::action("Previous Tab", PreviousTab)]),
         ]);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {

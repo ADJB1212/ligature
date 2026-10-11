@@ -28,16 +28,17 @@ pub struct Colors {
 
 pub fn colors() -> Colors {
     let paper = rgb_to_hsla(rgb(0xdce3ea));
+    let ink = rgb_to_hsla(rgb(0x1a2330));
     Colors {
-        background: rgb_to_hsla(rgb(0x1a2330)),
-        chrome: rgb_to_hsla(rgb(0x151c27)),
-        surface: rgb_to_hsla(rgb(0x232d3c)),
-        gutter: rgb_to_hsla(rgb(0x161d28)),
-        hover: rgb_to_hsla(rgb(0x334155)),
-        press: rgb_to_hsla(rgb(0x121820)),
+        background: ink,
+        chrome: ink,
+        surface: paper.opacity(0.06),
+        gutter: ink,
+        hover: paper.opacity(0.08),
+        press: paper.opacity(0.12),
         text: paper,
         muted_text: rgb_to_hsla(rgb(0x8b97a8)),
-        border: rgb_to_hsla(rgb(0x3a4a5c)),
+        border: paper.opacity(0.1),
         accent: paper,
         accent_hover: rgb_to_hsla(rgb(0xf2f5f8)),
         accent_press: rgb_to_hsla(rgb(0xc5ced8)),
@@ -53,30 +54,13 @@ pub fn colors() -> Colors {
     }
 }
 
-pub struct SyntaxStyle {
-    pub color: Hsla,
-    pub weight: gpui::FontWeight,
-    pub style: gpui::FontStyle,
-}
-
-pub fn syntax_style(category: ligature_syntax::Category) -> SyntaxStyle {
+pub fn syntax_color(category: ligature_syntax::Category) -> Hsla {
     use ligature_syntax::Category;
     let colors = colors();
-    SyntaxStyle {
-        color: match category {
-            Category::Comment => colors.muted_text,
-            Category::Brace | Category::MathDelimiter => colors.focus,
-            _ => colors.text,
-        },
-        weight: match category {
-            Category::Command | Category::Environment | Category::EntryType | Category::Field => gpui::FontWeight::BOLD,
-            _ => gpui::FontWeight::NORMAL,
-        },
-        style: if category == Category::Comment {
-            gpui::FontStyle::Italic
-        } else {
-            gpui::FontStyle::Normal
-        },
+    match category {
+        Category::Comment => colors.muted_text,
+        Category::Brace | Category::MathDelimiter => colors.focus,
+        _ => colors.text,
     }
 }
 
@@ -123,7 +107,7 @@ pub mod spacing {
         px(24.0)
     }
     pub fn radius() -> Pixels {
-        px(3.0)
+        px(6.0)
     }
     pub fn pane_boundary() -> Pixels {
         px(6.0)

@@ -10,7 +10,7 @@ use gpui::{
 use ligature_pdf::{Document, Page};
 use ligature_synctex::{Mapping, PdfPosition, SourcePosition};
 use ligature_theme::{colors, spacing};
-use ligature_ui::{Button, Indicator, caption, chrome_strip, indicator, inline_error};
+use ligature_ui::{Indicator, caption, chrome_strip, indicator, inline_error};
 use state::{Cache, RenderKey, accepts, raster_scale, zoom_anchor};
 use std::{ops::Range, path::PathBuf, sync::Arc};
 
@@ -310,7 +310,15 @@ impl Preview {
         cx.notify();
     }
 
-    fn set_zoom(&mut self, zoom: Zoom, cx: &mut Context<Self>) {
+    pub fn zoom_in(&mut self, cx: &mut Context<Self>) {
+        self.set_zoom(Zoom::Scale(self.scale * 1.25), cx);
+    }
+
+    pub fn zoom_out(&mut self, cx: &mut Context<Self>) {
+        self.set_zoom(Zoom::Scale(self.scale / 1.25), cx);
+    }
+
+    pub fn set_zoom(&mut self, zoom: Zoom, cx: &mut Context<Self>) {
         if !self.failed_keys.is_empty() {
             self.error = None;
         }
@@ -473,7 +481,7 @@ impl Render for Preview {
         } else if self.render_task.is_some() {
             "Rendering page..."
         } else {
-            "Cmd-click a page to reveal its source."
+            ""
         };
         let status_kind = if live {
             Indicator::Live
@@ -491,55 +499,32 @@ impl Render for Preview {
             .bg(colors().background)
             .key_context("LigaturePreview")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.set_zoom(Zoom::Scale(this.scale * 1.25), cx)))
-            .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.set_zoom(Zoom::Scale(this.scale / 1.25), cx)))
+            .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom_in(cx)))
+            .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom_out(cx)))
             .on_action(cx.listener(|this, _: &FitWidth, _, cx| this.set_zoom(Zoom::FitWidth, cx)))
             .on_action(cx.listener(|this, _: &FitPage, _, cx| this.set_zoom(Zoom::FitPage, cx)))
             .child(
                 chrome_strip()
+                    .id("preview-toolbar")
+                    .debug_selector(|| "preview-toolbar".into())
                     .flex()
-                    .flex_wrap()
+                    .h(px(40.0))
                     .items_center()
-                    .gap(spacing::small())
-                    .child(caption(format!("Page {} / {count}", if count == 0 { 0 } else { self.page + 1 })))
-                    .child(
-                        Button::new("zoom-out", "-")
-                            .disabled(count == 0)
-                            .on_click(cx.listener(|this, _, _, cx| this.set_zoom(Zoom::Scale(this.scale / 1.25), cx))),
-                    )
-                    .child(caption(format!("{:.0}%", self.scale * 100.0)))
-                    .child(
-                        Button::new("zoom-in", "+")
-                            .disabled(count == 0)
-                            .on_click(cx.listener(|this, _, _, cx| this.set_zoom(Zoom::Scale(this.scale * 1.25), cx))),
-                    )
-                    .child(
-                        Button::new("fit-width", "Width")
-                            .selected(self.zoom == Zoom::FitWidth)
-                            .disabled(count == 0)
-                            .on_click(cx.listener(|this, _, _, cx| this.set_zoom(Zoom::FitWidth, cx))),
-                    )
-                    .child(
-                        Button::new("fit-page", "Page")
-                            .selected(self.zoom == Zoom::FitPage)
-                            .disabled(count == 0)
-                            .on_click(cx.listener(|this, _, _, cx| this.set_zoom(Zoom::FitPage, cx))),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .w_full()
-                            .flex_shrink_0()
-                            .min_w(px(0.0))
-                            .items_center()
-                            .gap(spacing::small())
-                            .child(indicator("preview-status", status_kind))
-                            .child(div().flex_1().min_w(px(0.0)).overflow_hidden().child(caption(status))),
-                    ),
+                    .gap(spacing::large())
+                    .border_b_1()
+                    .border_color(colors().border)
+                    .child(div().flex_1().child(caption("PDF Preview")))
+                    .when(count > 0, |view| {
+                        view.child(caption(format!("{} / {count}", self.page + 1)))
+                            .child(caption(format!("{:.0}%", self.scale * 100.0)))
+                    }),
             )
             .when_some(self.error.clone(), |view, error| view.child(inline_error(error)))
             .child(
                 div()
+                    .id("preview-viewport")
+                    .debug_selector(|| "preview-viewport".into())
+                    .relative()
                     .flex_1()
                     .min_h(px(0.0))
                     .overflow_hidden()
@@ -597,7 +582,42 @@ impl Render for Preview {
                             },
                         )
                         .size_full(),
-                    ),
+                    )
+                    .when(count > 0 && !status.is_empty(), |view| {
+                        view.child(
+                            chrome_strip()
+                                .absolute()
+                                .bottom_0()
+                                .left_0()
+                                .right_0()
+                                .flex()
+                                .items_center()
+                                .gap(spacing::medium())
+                                .child(indicator("preview-status", status_kind))
+                                .child(caption(status)),
+                        )
+                    })
+                    .when(count == 0, |view| {
+                        view.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .justify_center()
+                                .gap(spacing::medium())
+                                .text_color(colors().muted_text)
+                                .child("Your document preview")
+                                .child(caption(if live {
+                                    "Loading PDF..."
+                                } else if cfg!(target_os = "macos") {
+                                    "Build with Cmd+B"
+                                } else {
+                                    "Build with Ctrl+B"
+                                })),
+                        )
+                    }),
             )
     }
 }
@@ -614,6 +634,35 @@ mod tests {
         let pdf = directory.path().join("proof.pdf");
         std::fs::write(&pdf, include_bytes!("../../pdf/tests/fixtures/pages.pdf")).unwrap();
         (directory, pdf)
+    }
+
+    #[test]
+    fn transient_status_preserves_the_pdf_viewport_bounds() {
+        let (_directory, pdf) = fixture();
+        let mut app = TestAppContext::single();
+        let window = app.add_window(|_, cx| Preview::new(cx));
+        let preview = window.root(&mut app).unwrap();
+        preview.update(&mut app, |preview, _| preview.document = Some(Document::load(&pdf).unwrap()));
+        let mut cx = gpui::VisualTestContext::from_window(window.into(), &app);
+        cx.simulate_resize(size(px(400.0), px(600.0)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let bounds = cx.debug_bounds("preview-viewport").unwrap();
+        cx.update(|window, cx| {
+            preview.update(cx, |preview, cx| {
+                preview.set_stale(true, cx);
+                preview.render_task = Some(cx.background_executor().spawn(async {}));
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert_eq!(cx.debug_bounds("preview-viewport").unwrap(), bounds);
+        cx.update(|window, cx| {
+            preview.update(cx, |preview, cx| {
+                preview.set_stale(false, cx);
+                preview.render_task = None;
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert_eq!(cx.debug_bounds("preview-viewport").unwrap(), bounds);
     }
 
     #[test]

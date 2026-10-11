@@ -251,6 +251,68 @@ fn open(cx: &mut TestAppContext, window: WindowHandle<Workspace>, path: &Path) {
 }
 
 #[test]
+fn compact_chrome_keeps_editor_and_preview_headers_aligned_at_minimum_window_size() {
+    let mut app = TestAppContext::single();
+    let (window, _) = workspace(&mut app);
+    let mut cx = gpui::VisualTestContext::from_window(window.into(), &app);
+    cx.simulate_resize(gpui::size(px(640.0), px(480.0)));
+    cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    let toolbar = cx.debug_bounds("workspace-toolbar").unwrap();
+    let tabs = cx.debug_bounds("tabs").unwrap();
+    let preview = cx.debug_bounds("preview-toolbar").unwrap();
+    assert_eq!(toolbar.size.height, px(44.0));
+    assert_eq!(tabs.size.height, px(40.0));
+    assert_eq!(preview.top(), tabs.top());
+    assert_eq!(preview.bottom(), tabs.bottom());
+    assert!(preview.right() <= px(640.0));
+}
+
+#[test]
+fn panel_menu_actions_work_from_editor_focus_and_preserve_the_document() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    open_project(&mut cx, window, directory.path());
+    type_text(&mut cx, &root, "\\section{Draft}");
+    let identity = root.read_with(&cx, |workspace, cx| workspace.editor.read(cx).state().buffer().id());
+    for visible in [false, true] {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            window.dispatch_action(Box::new(ToggleProject), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        root.read_with(&cx, |workspace, cx| {
+            assert_eq!(workspace.project_visible, visible);
+            assert_eq!(workspace.editor.read(cx).state().buffer().id(), identity);
+            assert!(workspace.dirty(cx));
+        });
+    }
+    cx.update_window(window.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(ToggleOutline), cx);
+        window.dispatch_action(Box::new(ToggleLanguageServer), cx);
+        window.dispatch_action(Box::new(ToggleTexResources), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    root.read_with(&cx, |workspace, _| {
+        assert!(workspace.semantic_ui.visible);
+        assert!(workspace.language_ui.visible);
+        assert!(workspace.bundle_ui.visible);
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        assert!(root.read(cx).editor.focus_handle(cx).is_focused(window));
+        assert!(window.is_action_available(&ZoomIn, cx));
+        assert!(window.is_action_available(&ZoomOut, cx));
+        assert!(window.is_action_available(&FitWidth, cx));
+        assert!(window.is_action_available(&FitPage, cx));
+    })
+    .unwrap();
+}
+
+#[test]
 fn showing_and_resizing_build_output_preserves_the_pdf_preview_bounds() {
     let mut app = TestAppContext::single();
     let (window, _) = workspace(&mut app);

@@ -18,6 +18,10 @@ use crate::{
 mod assistance;
 pub use assistance::{Complete, ShowHover};
 
+#[path = "highlights.rs"]
+mod highlights;
+use highlights::Highlights;
+
 actions!(ligature_editor, [SelectAll, Copy, Cut, Paste, Undo, Redo]);
 
 pub fn init(cx: &mut App) {
@@ -62,6 +66,7 @@ pub struct Editor {
     diagnostic_revision: Option<ligature_buffer::Revision>,
     language: ligature_syntax::Language,
     syntax: Option<Arc<ligature_syntax::Snapshot>>,
+    highlights: Option<Highlights>,
     structure: ligature_tex::Document,
     parse_requested: Option<(ligature_buffer::DocumentId, ligature_buffer::Revision, ligature_syntax::Language)>,
     parse_task: Option<Task<()>>,
@@ -104,6 +109,7 @@ impl Editor {
             diagnostic_revision: None,
             language,
             syntax: None,
+            highlights: None,
             structure: ligature_tex::Document::default(),
             parse_requested: None,
             parse_task: None,
@@ -119,6 +125,7 @@ impl Editor {
             self.dismiss_assistance();
             self.language = language;
             self.syntax = None;
+            self.highlights = None;
             self.structure = ligature_tex::Document::default();
             self.parse_requested = None;
             self.queue_parse(cx);
@@ -150,6 +157,13 @@ impl Editor {
         }
         self.parse_requested = Some(key);
         let text: Arc<str> = self.state.buffer().text().into();
+        if let Some(highlights) = &mut self.highlights {
+            if highlights.document == key.0 && highlights.language == key.2 {
+                highlights.update(Arc::clone(&text));
+            } else {
+                self.highlights = None;
+            }
+        }
         let previous = self.syntax.clone();
         self.parse_task = Some(cx.spawn(async move |this, cx| {
             let (snapshot, structure) = cx
@@ -173,6 +187,7 @@ impl Editor {
                     && editor.state.marked_range().is_none()
                     && snapshot.is_current(editor.state.buffer().id(), editor.state.buffer().revision(), editor.language)
                 {
+                    editor.highlights = Some(Highlights::new(&snapshot));
                     editor.syntax = Some(snapshot);
                     editor.structure = structure;
                     editor.suppress_opaque_assistance();
@@ -523,33 +538,29 @@ impl Editor {
     }
 
     fn shape_source(&self, text: SharedString, start: usize, window: &Window) -> ShapedLine {
-        let Some(snapshot) = self.syntax_snapshot() else {
+        let Some(highlights) = self.highlights.as_ref().filter(|_| self.state.marked_range().is_none()) else {
             return self.shape_text(text, window, false);
         };
         let end = start + text.len();
         let mut runs = Vec::new();
         let mut cursor = start;
-        let first = snapshot.tokens.partition_point(|token| token.range.end <= start);
+        let first = highlights.tokens.partition_point(|token| token.range.end <= start);
         let font = self.font.clone().unwrap_or_else(|| window.text_style().font());
         let mut append = |len, category| {
             if len == 0 {
                 return;
             }
-            let style = ligature_theme::syntax_style(category);
-            let mut font = font.clone();
-            font.weight = style.weight;
-            font.style = style.style;
             runs.push(TextRun {
                 len,
-                font,
-                color: style.color,
+                font: font.clone(),
+                color: ligature_theme::syntax_color(category),
                 background_color: None,
                 underline: None,
                 strikethrough: None,
                 letter_spacing: None,
             });
         };
-        for token in snapshot.tokens[first..].iter().take_while(|token| token.range.start < end) {
+        for token in highlights.tokens[first..].iter().take_while(|token| token.range.start < end) {
             let token_start = token.range.start.max(cursor);
             append(token_start - cursor, ligature_syntax::Category::Text);
             let token_end = token.range.end.min(end);
@@ -809,11 +820,14 @@ impl Editor {
         let resized = self.bounds.size != bounds.size;
         self.bounds = bounds;
         self.font = Some(window.text_style().font());
-        let digits = self.state.line_count().to_string();
         self.gutter = if self.read_only {
             px(8.0)
         } else {
-            self.shape_text(digits.into(), window, true).width + px(24.0)
+            let digits = self.state.line_count().to_string().len().max(2);
+            let digit_width = (0..=9)
+                .map(|digit| self.shape_text(digit.to_string().into(), window, true).width)
+                .fold(px(0.0), Pixels::max);
+            px(f32::from(digit_width * digits as f32 + px(24.0)).ceil())
         };
         let caret_line = self.state.line_index(self.state.caret());
         let caret = self.shape(caret_line, window);
@@ -1167,6 +1181,161 @@ mod tests {
                 assert_eq!(editor.caret_is_opaque(), expected, "caret {caret}");
             }
         });
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn native_rendering_keeps_unchanged_braces_and_comments_identical_during_typing() {
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            Arc::new(()),
+            gpui_platform::current_headless_renderer,
+        );
+        let window = cx
+            .open_window(size(px(640.0), px(480.0)), |_, cx| {
+                cx.new(|cx| Editor::new(Buffer::from_text("\\section{Title}\n% comment\nbody"), cx))
+            })
+            .unwrap();
+        let editor = window.root(&mut cx).unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.update_state(|state| state.move_to(state.text().len(), false), cx);
+            });
+            window.focus(&editor.focus_handle(cx), cx);
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+        let before = cx.capture_screenshot(window.into()).unwrap();
+        cx.update_window(window.into(), |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.replace_text_in_range(None, " typed", window, cx);
+                assert!(editor.syntax_snapshot().is_none());
+            });
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+        let pending = cx.capture_screenshot(window.into()).unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx)).unwrap();
+        let parsed = cx.capture_screenshot(window.into()).unwrap();
+        let rows = before.width() as usize * 4 * (before.height() as usize * 40 / 480);
+        assert!(
+            before.as_raw()[..rows] == pending.as_raw()[..rows],
+            "unchanged text changed while parsing was pending"
+        );
+        assert!(
+            before.as_raw()[..rows] == parsed.as_raw()[..rows],
+            "unchanged text changed after parsing finished"
+        );
+    }
+
+    #[test]
+    fn typing_preserves_brace_highlights_while_semantic_results_are_stale() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|_, cx| Editor::new(Buffer::from_text("\\section{Title}"), cx));
+        let editor = window.root(&mut cx).unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.state.move_to(10, false);
+                for text in ["X", "猫", "Y"] {
+                    editor.replace_text_in_range(None, text, window, cx);
+                    assert!(editor.syntax_snapshot().is_none());
+                    assert!(editor.structure().is_none());
+                    let braces: Vec<_> = editor
+                        .highlights
+                        .as_ref()
+                        .unwrap()
+                        .tokens
+                        .iter()
+                        .filter(|token| token.category == ligature_syntax::Category::Brace)
+                        .map(|token| token.range.clone())
+                        .collect();
+                    let closing = editor.state.text().find('}').unwrap();
+                    assert_eq!(braces, [8..9, closing..closing + 1]);
+                }
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        editor.read_with(&cx, |editor, _| {
+            assert!(editor.syntax_snapshot().is_some());
+            assert_eq!(editor.highlights.as_ref().unwrap().tokens, editor.syntax_snapshot().unwrap().tokens);
+        });
+    }
+
+    #[test]
+    fn line_number_gutter_stays_fixed_within_its_reserved_digit_width() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|_, cx| Editor::new(Buffer::new(), cx));
+        let editor = window.root(&mut cx).unwrap();
+        cx.update_window(window.into(), |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                let bounds = Bounds::new(Point::default(), size(px(640.0), px(480.0)));
+                let mut gutter = None;
+                for lines in [1, 8, 11, 88, 99] {
+                    editor.update_state(|state| state.reload("\n".repeat(lines - 1)), cx);
+                    editor.layout(bounds, window);
+                    assert_eq!(*gutter.get_or_insert(editor.gutter), editor.gutter);
+                }
+            });
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn syntax_publication_preserves_font_and_glyph_positions_while_typing() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|_, cx| Editor::new(Buffer::new(), cx));
+        let editor = window.root(&mut cx).unwrap();
+        for (language, text) in [
+            (ligature_syntax::Language::Tex, "\\documentclass{article} % office affine"),
+            (ligature_syntax::Language::Bibliography, "@book{key, title={office affine}}"),
+        ] {
+            editor.update(&mut cx, |editor, cx| {
+                editor.set_language(language, cx);
+                editor.update_state(|state| state.reload(text.into()), cx);
+            });
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.focus(&editor.focus_handle(cx), cx);
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+            let pending = cx
+                .update_window(window.into(), |_, window, cx| {
+                    editor.update(cx, |editor, cx| {
+                        editor.replace_text_in_range(None, "typed ", window, cx);
+                        assert!(editor.syntax_snapshot().is_none());
+                        editor.shape(0, window)
+                    })
+                })
+                .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                editor.read_with(cx, |editor, _| {
+                    assert!(editor.syntax_snapshot().is_some());
+                    let highlighted = editor.shape(0, window);
+                    assert_eq!(highlighted.width, pending.width);
+                    assert_eq!(highlighted.boundaries, pending.boundaries);
+                    for ((_, highlighted), (_, pending)) in highlighted.pieces.iter().zip(&pending.pieces) {
+                        let glyphs = |line: &ShapedLine| {
+                            line.runs
+                                .iter()
+                                .flat_map(|run| {
+                                    run.glyphs
+                                        .iter()
+                                        .map(move |glyph| (run.font_id, glyph.id, glyph.position, glyph.index, glyph.is_emoji))
+                                })
+                                .collect::<Vec<_>>()
+                        };
+                        assert_eq!(glyphs(highlighted), glyphs(pending));
+                    }
+                });
+            })
+            .unwrap();
+        }
     }
 
     #[test]

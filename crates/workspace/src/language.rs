@@ -11,7 +11,7 @@ use ligature_completion::Target;
 use ligature_diagnostics::{Provider, Store};
 use ligature_editor::Editor;
 use ligature_lsp::{Client, Event, Request, ServerConfig};
-use ligature_ui::{Button, caption, chrome_strip};
+use ligature_ui::{caption, chrome_strip};
 use serde_json::json;
 
 use crate::Workspace;
@@ -412,7 +412,7 @@ impl Workspace {
         }
     }
 
-    pub(super) fn render_language_server(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_language_server(&self) -> impl IntoElement {
         chrome_strip()
             .flex()
             .flex_col()
@@ -426,12 +426,7 @@ impl Workspace {
                         "Local completion available"
                     } else {
                         &self.language_ui.status
-                    }))
-                    .child(
-                        Button::new("restart-language-server", "Restart Language Server")
-                            .disabled(self.language_root().is_none())
-                            .on_click(cx.listener(|workspace, _, _, cx| workspace.restart_language_server(cx))),
-                    ),
+                    })),
             )
             .children(self.language_ui.diagnostics.iter().take(20).map(|diagnostic| {
                 caption(format!(

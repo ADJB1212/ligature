@@ -325,17 +325,20 @@ impl Workspace {
             .flex_shrink_0()
             .overflow_y_scroll()
             .px(spacing::medium())
-            .py(spacing::small())
+            .py(spacing::large())
             .bg(colors().background)
-            .child(caption("OUTLINE"))
+            .child(caption("Outline"))
             .when(!fresh, |view| view.child(caption("Updating outline...")))
             .children(rows)
             .when(fresh, |view| {
-                view.child(caption(format!(
-                    "{} unresolved references, {} unresolved citations",
-                    index.unresolved_references.len(),
-                    index.unresolved_citations.len()
-                )))
+                let unresolved = index.unresolved_references.len() + index.unresolved_citations.len();
+                view.when(unresolved > 0, |view| {
+                    view.child(caption(format!(
+                        "{} unresolved references, {} unresolved citations",
+                        index.unresolved_references.len(),
+                        index.unresolved_citations.len()
+                    )))
+                })
                 .children(
                     index
                         .unresolved_references

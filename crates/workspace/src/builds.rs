@@ -457,12 +457,9 @@ impl Workspace {
                             .child(caption(format!("{status} - {errors} errors, {warnings} warnings"))),
                     )
                     .child(
-                        Button::new(
-                            "hide-build-output",
-                            if cfg!(target_os = "macos") { "Hide (Cmd+J)" } else { "Hide (Ctrl+J)" },
-                        )
-                        .quiet()
-                        .on_click(cx.listener(|this, _, window, cx| this.toggle_build_output(window, cx))),
+                        Button::new("hide-build-output", "Hide")
+                            .quiet()
+                            .on_click(cx.listener(|this, _, window, cx| this.toggle_build_output(window, cx))),
                     ),
             )
             .child(details)

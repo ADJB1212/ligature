@@ -18,14 +18,15 @@ use std::{
 };
 
 use gpui::{
-    App, ColorExt, Context, Entity, FocusHandle, Focusable, IntoElement, KeyBinding, Pixels, Render, Subscription, Task, Window, actions, div,
-    prelude::*, px,
+    App, Context, Entity, FocusHandle, Focusable, IntoElement, KeyBinding, Pixels, Render, Subscription, Task, Window, actions, div, prelude::*, px,
 };
 use ligature_buffer::Buffer;
 use ligature_editor::Editor;
 use ligature_fs::{FileState, FileWatcher, LoadedFile};
 use ligature_theme::{colors, spacing, typography};
-use ligature_ui::{Button, Indicator, bottom_pane, caption, chrome_strip, indicator, inline_error, rule, split_pane, vertical_seam};
+use ligature_ui::{Button, Indicator, bottom_pane, caption, chrome_strip, indicator, inline_error, split_pane, vertical_seam};
+
+pub use ligature_preview::{FitPage, FitWidth, ZoomIn, ZoomOut};
 
 use lifecycle::Intent;
 
@@ -54,7 +55,9 @@ actions!(
         CancelBuild,
         ShowInPreview,
         ToggleBuildOutput,
+        ToggleProject,
         ToggleOutline,
+        ToggleTexResources,
         GoToDefinition,
         RestartLanguageServer,
         ToggleLanguageServer
@@ -90,6 +93,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(&format!("{modifier}-j"), ToggleBuildOutput, Some("LigatureWorkspace")),
         KeyBinding::new("f12", GoToDefinition, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-shift-l"), ToggleOutline, Some("LigatureWorkspace")),
+        KeyBinding::new(&format!("{modifier}-alt-1"), ToggleProject, Some("LigatureWorkspace")),
     ]);
 }
 
@@ -132,6 +136,7 @@ pub struct Workspace {
     tabs: Vec<Option<Tab>>,
     active_tab: usize,
     project: Option<ligature_project::Project>,
+    project_visible: bool,
     directories: BTreeMap<PathBuf, ligature_project::Directory>,
     expanded: BTreeSet<PathBuf>,
     settings: ligature_settings::Settings,
@@ -196,6 +201,7 @@ impl Workspace {
             tabs: vec![None],
             active_tab: 0,
             project: None,
+            project_visible: true,
             directories: BTreeMap::new(),
             expanded: BTreeSet::new(),
             settings: ligature_settings::Settings::default(),
@@ -496,10 +502,21 @@ impl Render for Workspace {
                     .on_action(cx.listener(|this, _: &Close, window, cx| this.start(Intent::Close, window, cx)))
             })
             .on_action(cx.listener(|this, _: &Quit, window, cx| this.request_quit(window, cx)))
-            .on_action(cx.listener(|this, _: &Build, window, cx| this.start_build(window, cx)))
-            .on_action(cx.listener(|this, _: &CancelBuild, _, cx| this.cancel_build(cx)))
+            .when(!self.busy && self.can_build() && !self.build_ui.running(), |view| {
+                view.on_action(cx.listener(|this, _: &Build, window, cx| this.start_build(window, cx)))
+            })
+            .when(self.build_ui.running(), |view| {
+                view.on_action(cx.listener(|this, _: &CancelBuild, _, cx| this.cancel_build(cx)))
+            })
             .on_action(cx.listener(|this, _: &ShowInPreview, _, cx| this.show_in_preview(cx)))
             .on_action(cx.listener(|this, _: &ToggleBuildOutput, window, cx| this.toggle_build_output(window, cx)))
+            .when(self.project.is_some(), |view| {
+                view.on_action(cx.listener(|this, _: &ToggleProject, window, cx| {
+                    this.project_visible = !this.project_visible;
+                    this.focus_editor(window, cx);
+                    cx.notify();
+                }))
+            })
             .on_action(cx.listener(|this, _: &ToggleOutline, _, cx| {
                 this.semantic_ui.visible = !this.semantic_ui.visible;
                 cx.notify();
@@ -509,6 +526,23 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ToggleLanguageServer, _, cx| {
                 this.language_ui.visible = !this.language_ui.visible;
                 cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleTexResources, window, cx| {
+                this.bundle_ui.visible = !this.bundle_ui.visible;
+                if this.bundle_ui.visible {
+                    this.check_installed_bundle(window, cx);
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.preview.update(cx, |preview, cx| preview.zoom_in(cx))))
+            .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.preview.update(cx, |preview, cx| preview.zoom_out(cx))))
+            .on_action(cx.listener(|this, _: &FitWidth, _, cx| {
+                this.preview
+                    .update(cx, |preview, cx| preview.set_zoom(ligature_preview::Zoom::FitWidth, cx));
+            }))
+            .on_action(cx.listener(|this, _: &FitPage, _, cx| {
+                this.preview
+                    .update(cx, |preview, cx| preview.set_zoom(ligature_preview::Zoom::FitPage, cx));
             }))
             .when(!unavailable, |view| {
                 view.on_action(cx.listener(|this, _: &Find, window, cx| this.show_search(false, false, window, cx)))
@@ -522,8 +556,8 @@ impl Render for Workspace {
                     .on_action(cx.listener(|this, _: &FindNext, window, cx| this.navigate_search(false, window, cx)))
                     .on_action(cx.listener(|this, _: &FindPrevious, window, cx| this.navigate_search(true, window, cx)))
             })
-            .child(self.render_toolbar(dirty, &name, unavailable, cx))
-            .when(self.language_ui.visible, |view| view.child(self.render_language_server(cx)))
+            .child(self.render_toolbar(cx))
+            .when(self.language_ui.visible, |view| view.child(self.render_language_server()))
             .when(self.bundle_ui.visible, |view| view.child(self.render_resources(cx)))
             .when_some(self.error.clone(), |view, error| view.child(inline_error(error)))
             .children(self.settings_errors.iter().map(|error| inline_error(error.clone())))
@@ -558,7 +592,9 @@ impl Render for Workspace {
                     .flex()
                     .flex_1()
                     .min_h(gpui::px(0.0))
-                    .when(self.project.is_some(), |view| view.child(self.render_tree(cx)).child(vertical_seam()))
+                    .when(self.project.is_some() && self.project_visible, |view| {
+                        view.child(self.render_tree(cx)).child(vertical_seam())
+                    })
                     .when(self.semantic_ui.visible, |view| {
                         view.child(self.render_outline(cx)).child(vertical_seam())
                     })
@@ -584,117 +620,51 @@ impl Workspace {
         cx.notify();
     }
 
-    fn render_toolbar(&self, dirty: bool, name: &str, unavailable: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         chrome_strip()
+            .id("workspace-toolbar")
+            .debug_selector(|| "workspace-toolbar".into())
             .flex()
-            .flex_wrap()
+            .h(px(44.0))
             .items_center()
-            .gap(spacing::small())
+            .gap(spacing::large())
+            .border_b_1()
+            .border_color(colors().border)
             .child(
-                Button::new("new", "New")
-                    .disabled(self.busy)
-                    .on_click(cx.listener(|this, _, window, cx| this.start(Intent::New, window, cx))),
-            )
-            .child(
-                Button::new("open", "Open")
-                    .disabled(self.busy)
-                    .on_click(cx.listener(|this, _, window, cx| this.start(Intent::Open, window, cx))),
-            )
-            .child({
-                let save = Button::new("save", "Save")
-                    .disabled(unavailable)
-                    .on_click(cx.listener(|this, _, window, cx| this.start(Intent::Save, window, cx)));
-                if dirty { save.filled() } else { save }
-            })
-            .child(
-                Button::new("save-as", "Save As")
-                    .disabled(unavailable)
-                    .on_click(cx.listener(|this, _, window, cx| this.start(Intent::SaveAs, window, cx))),
-            )
-            .child(
-                Button::new("close", "Close")
-                    .disabled(unavailable)
-                    .on_click(cx.listener(|this, _, window, cx| this.start(Intent::Close, window, cx))),
-            )
-            .child(rule())
-            .child(
-                Button::new("open-project", "Open Folder")
+                Button::new("open-project", "Open Project")
                     .disabled(self.busy)
                     .on_click(cx.listener(|this, _, window, cx| this.start(Intent::OpenProject, window, cx))),
             )
             .child(
-                Button::new("root-document", "Set Root")
-                    .disabled(unavailable || self.project.is_none() || self.document.as_ref().is_none_or(|document| document.path.is_none()))
-                    .on_click(cx.listener(|this, _, window, cx| this.start(Intent::SelectRoot, window, cx))),
-            )
-            .child(rule())
-            .child(
-                Button::new("find", "Find")
-                    .disabled(unavailable)
-                    .selected(self.search.visible)
-                    .on_click(cx.listener(|this, _, window, cx| this.show_search(false, false, window, cx))),
-            )
-            .child(
-                Button::new("build", "Build")
-                    .disabled(self.busy || !self.can_build() || self.build_ui.running())
-                    .on_click(cx.listener(|this, _, window, cx| this.start_build(window, cx))),
-            )
-            .child(
-                Button::new("outline", "Outline")
-                    .selected(self.semantic_ui.visible)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.semantic_ui.visible = !this.semantic_ui.visible;
-                        cx.notify();
-                    })),
-            )
-            .when(self.build_ui.running(), |view| {
-                view.child(Button::new("cancel-build", "Cancel Build").on_click(cx.listener(|this, _, _, cx| this.cancel_build(cx))))
-            })
-            .child(
-                Button::new("show-in-preview", "Show in PDF")
-                    .disabled(unavailable)
-                    .on_click(cx.listener(|this, _, _, cx| this.show_in_preview(cx))),
-            )
-            .child(
-                Button::new("build-output", "Build Output")
-                    .selected(self.build_ui.visible)
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_build_output(window, cx))),
-            )
-            .child(
-                Button::new("tex-resources", "TeX Resources")
-                    .selected(self.bundle_ui.visible)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.bundle_ui.visible = !this.bundle_ui.visible;
-                        if this.bundle_ui.visible {
-                            this.check_installed_bundle(window, cx);
-                        }
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("language-server", "Language Server")
-                    .selected(self.language_ui.visible)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.language_ui.visible = !this.language_ui.visible;
-                        cx.notify();
-                    })),
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(self.project.as_ref().map_or_else(
+                        || "Ligature".to_owned(),
+                        |project| project.root.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                    )),
             )
             .child(
                 div()
                     .flex()
-                    .flex_1()
-                    .min_w(gpui::px(0.0))
                     .items_center()
-                    .justify_end()
-                    .gap(spacing::small())
+                    .gap(spacing::medium())
                     .when(
                         self.build_ui.running()
                             || self.bundle_ui.busy()
                             || (self.search.visible && (self.search.running || self.search.previewing || self.search.applying)),
-                        |view| view.child(indicator("toolbar-live", Indicator::Live)),
+                        |view| view.child(indicator("toolbar-live", Indicator::Live)).child(caption("Working...")),
                     )
-                    .when(dirty, |view| view.child(indicator("toolbar-dirty", Indicator::On)))
-                    .child(caption(format!("{name}{}", if dirty { " *" } else { "" }))),
+                    .child(if self.build_ui.running() {
+                        Button::new("cancel-build", "Stop").on_click(cx.listener(|this, _, _, cx| this.cancel_build(cx)))
+                    } else {
+                        Button::new("build", "Build")
+                            .filled()
+                            .disabled(self.busy || !self.can_build())
+                            .on_click(cx.listener(|this, _, window, cx| this.start_build(window, cx)))
+                    }),
             )
     }
 
@@ -702,11 +672,17 @@ impl Workspace {
         let colors = colors();
         div()
             .id("tabs")
+            .debug_selector(|| "tabs".into())
             .flex()
             .overflow_x_scroll()
             .flex_shrink_0()
-            .px(spacing::small())
+            .h(px(40.0))
+            .items_center()
+            .px(spacing::medium())
+            .gap(spacing::small())
             .bg(colors.chrome)
+            .border_b_1()
+            .border_color(colors.border)
             .children(self.tabs.iter().enumerate().map(|(index, tab)| {
                 let (document, editor) = tab.as_ref().map_or_else(
                     || (self.document.as_ref().expect("active tab exists"), &self.editor),
@@ -719,34 +695,27 @@ impl Workspace {
                     .id(("tab", index))
                     .group(group.clone())
                     .flex()
-                    .flex_col()
-                    .cursor_pointer()
+                    .flex_shrink_0()
+                    .items_center()
+                    .rounded(spacing::radius())
+                    .when(active, |view| view.bg(colors.surface))
+                    .when(!active, |view| view.hover(|style| style.bg(colors.hover)))
+                    .child(
+                        Button::new(("activate-tab", index), document.name())
+                            .quiet()
+                            .selected(active)
+                            .disabled(self.busy)
+                            .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(index, window, cx))),
+                    )
+                    .when(dirty, |view| view.child(indicator(("dirty-tab", index), Indicator::On)))
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .px(spacing::small())
-                            .when(active, |view| view.bg(colors.background))
-                            .when(!active, |view| view.hover(|style| style.bg(colors.hover)))
-                            .child(
-                                Button::new(("activate-tab", index), document.name())
-                                    .quiet()
-                                    .selected(active)
-                                    .disabled(self.busy)
-                                    .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(index, window, cx))),
-                            )
-                            .when(dirty, |view| view.child(indicator(("dirty-tab", index), Indicator::On)))
-                            .child(Button::new(("close-tab", index), "x").quiet().disabled(self.busy).on_click(cx.listener(
+                            .when(!active && !dirty, |view| view.invisible().group_hover(group, |style| style.visible()))
+                            .child(Button::new(("close-tab", index), "×").quiet().disabled(self.busy).on_click(cx.listener(
                                 move |this, _, window, cx| {
                                     this.start(Intent::CloseTab(index), window, cx);
                                 },
                             ))),
-                    )
-                    .child(
-                        div()
-                            .h(gpui::px(2.0))
-                            .bg(if active { colors.text } else { gpui::transparent_black() })
-                            .when(!active, |line| line.group_hover(group, |style| style.bg(colors.text.opacity(0.45)))),
                     )
             }))
     }

@@ -32,7 +32,7 @@ pub fn focus_previous(_: &FocusPrevious, window: &mut Window, cx: &mut App) {
 }
 
 pub fn chrome_strip() -> gpui::Div {
-    div().flex_shrink_0().px(spacing::medium()).py(spacing::small()).bg(colors().chrome)
+    div().flex_shrink_0().px(spacing::large()).py(spacing::medium()).bg(colors().chrome)
 }
 
 pub fn hairline() -> impl IntoElement {
@@ -86,7 +86,7 @@ pub fn indicator(id: impl Into<ElementId>, kind: Indicator) -> gpui::AnyElement 
         Indicator::On => (colors.text, false),
         Indicator::Alert => (colors.error, false),
     };
-    let lamp = div().size(px(8.0)).rounded(px(99.0)).flex_shrink_0().bg(color);
+    let lamp = div().size(px(5.0)).rounded(px(99.0)).flex_shrink_0().bg(color);
     if pulse {
         lamp.with_animation(
             id,
