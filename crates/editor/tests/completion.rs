@@ -172,6 +172,32 @@ fn server_and_build_diagnostic_messages_coexist_and_stale_messages_disappear() {
 }
 
 #[test]
+fn cached_server_messages_skip_invalid_locations_and_preserve_message_order() {
+    use ligature_diagnostics::{Diagnostic, Provider, Severity, SourceRange};
+    let mut cx = TestAppContext::single();
+    let editor = cx.new(|cx| Editor::new(Buffer::from_text("first\r\nα😀last"), cx));
+    editor.update(&mut cx, |editor, cx| {
+        let diagnostic = |line, message: &str| Diagnostic {
+            severity: Severity::Warning,
+            provider: Provider::LanguageServer("Texlab".into()),
+            message: message.into(),
+            path: None,
+            range: Some(SourceRange::Lines { start: line, end: line }),
+        };
+        editor.set_server_diagnostics(vec![diagnostic(100, "invalid"), diagnostic(2, "second"), diagnostic(1, "first")], cx);
+        assert_eq!(editor.diagnostic_messages(0), ["first"]);
+        assert_eq!(editor.diagnostic_messages(5), ["first"]);
+        assert!(editor.diagnostic_messages(6).is_empty());
+        assert_eq!(editor.diagnostic_messages(7), ["second"]);
+        assert_eq!(editor.diagnostic_messages(editor.state().text().len()), ["second"]);
+        assert!(editor.hover_available());
+        editor.update_state(|state| state.insert("edited", false), cx);
+        assert!(editor.diagnostic_messages(0).is_empty());
+        assert!(!editor.hover_available());
+    });
+}
+
+#[test]
 fn texlab_environment_snippet_mirrors_names_and_undo_restores_both_occurrences() {
     let mut cx = TestAppContext::single();
     cx.update(init);

@@ -209,7 +209,7 @@ fn install_archive(
     writer.write_all(identity.as_bytes()).map_err(|error| error.to_string())?;
     writer.finish().map_err(|error| error.to_string())?;
     temporary.as_file().sync_all().map_err(|error| error.to_string())?;
-    let checksum = checksum(temporary.path())?;
+    let checksum = LocalBundle::checksum_and_validate(temporary.path())?;
     let filename = temporary.path().file_name().unwrap().to_str().unwrap().to_string();
     let installation = Installation {
         filename,
@@ -218,7 +218,6 @@ fn install_archive(
         fonts: BUNDLE_SHA256.trim().into(),
         upstream: UPSTREAM_DIGEST.into(),
     };
-    LocalBundle::open_with_checksum(temporary.path(), &installation.checksum)?;
     let mut metadata = tempfile::NamedTempFile::new_in(directory).map_err(|error| error.to_string())?;
     serde_json::to_writer(&mut metadata, &installation).map_err(|error| error.to_string())?;
     metadata.as_file().sync_all().map_err(|error| error.to_string())?;
@@ -228,20 +227,6 @@ fn install_archive(
     metadata.persist(directory.join(INSTALLATION_FILE)).map_err(|error| error.to_string())?;
     let (_, path) = temporary.keep().map_err(|error| error.to_string())?;
     Ok(path)
-}
-
-fn checksum(path: &Path) -> Result<String, String> {
-    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0; 65536];
-    loop {
-        let length = file.read(&mut buffer).map_err(|error| error.to_string())?;
-        if length == 0 {
-            break;
-        }
-        hash.update(&buffer[..length]);
-    }
-    Ok(hex::encode(hash.finalize()))
 }
 
 #[cfg(test)]

@@ -58,6 +58,76 @@ fn local_keys_filter_and_server_candidates_take_precedence() {
 }
 
 #[test]
+fn large_completion_sets_keep_the_best_200_in_order() {
+    let mut candidates: Vec<_> = (0..1000)
+        .rev()
+        .map(|index| candidate(&format!("key:{index:04}"), 0..0, "value"))
+        .collect();
+    candidates.push(candidate("key:", 0..0, "exact"));
+    candidates.push(candidate("KEY:0000", 0..0, "case insensitive"));
+    candidates.push(candidate("unrelated", 0..0, "ignored"));
+    let ranked = rank(candidates, "key:");
+    assert_eq!(ranked.len(), 200);
+    assert_eq!(ranked[0].label, "key:");
+    for (index, candidate) in ranked[1..].iter().enumerate() {
+        assert_eq!(candidate.label, format!("key:{index:04}"));
+    }
+    let names: Vec<_> = (0..1000).rev().map(|index| format!("key:{index:04}")).collect();
+    let context = context("\\ref{key:", 9).unwrap();
+    let local = local(&context, names.iter().map(String::as_str), std::iter::empty());
+    assert_eq!(local.len(), 200);
+    for (index, candidate) in local.iter().enumerate() {
+        assert_eq!(candidate.label, format!("key:{index:04}"));
+    }
+}
+
+#[test]
+fn local_filtering_preserves_unicode_case_matching_and_duplicate_keys() {
+    let context = context("\\ref{é", 7).unwrap();
+    let candidates = local(&context, ["Éclair", "école", "other", "école"].into_iter(), std::iter::empty());
+    assert_eq!(
+        candidates.iter().map(|candidate| candidate.label.as_str()).collect::<Vec<_>>(),
+        ["école", "Éclair"]
+    );
+}
+
+#[test]
+fn completion_validation_rejects_invalid_edits_and_snippets() {
+    let text = "α😀tail";
+    let mut item = candidate("valid", 6..10, "value");
+    item.additional.push(Edit {
+        range: 0..0,
+        text: "prefix".into(),
+    });
+    assert!(ligature_completion::validate(text, &item).is_ok());
+    item.additional.push(Edit {
+        range: 7..8,
+        text: "overlap".into(),
+    });
+    assert!(ligature_completion::validate(text, &item).is_err());
+    item.additional.clear();
+    for range in [1..2, 11..11, std::ops::Range { start: 8, end: 7 }] {
+        item.edit.range = range;
+        assert!(ligature_completion::validate(text, &item).is_err());
+    }
+    item.edit.range = 6..10;
+    item.snippet = true;
+    item.edit.text = "${1:unfinished".into();
+    assert!(ligature_completion::validate(text, &item).is_err());
+    item.edit.text = "${1:valid}$0".into();
+    assert!(ligature_completion::validate(text, &item).is_ok());
+    item.additional.push(Edit {
+        range: 6..6,
+        text: "first".into(),
+    });
+    item.additional.push(Edit {
+        range: 6..6,
+        text: "second".into(),
+    });
+    assert!(ligature_completion::validate(text, &item).is_err());
+}
+
+#[test]
 fn snippets_expand_defaults_choices_nested_stops_and_final_caret() {
     let expansion = snippet("${2:β} ${1:${3:inner}} ${4|one,two|} $0").unwrap();
     let text = expansion.text;

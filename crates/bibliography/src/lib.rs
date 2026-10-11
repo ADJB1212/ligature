@@ -293,7 +293,13 @@ impl Parser<'_> {
         start..self.cursor
     }
     fn recovery(&self) -> bool {
-        if self.byte() != Some(b'@') || !self.text[..self.cursor].rsplit('\n').next().is_some_and(|line| line.trim().is_empty()) {
+        if self.byte() != Some(b'@')
+            || !self.text[..self.cursor]
+                .chars()
+                .rev()
+                .take_while(|&character| character != '\n')
+                .all(char::is_whitespace)
+        {
             return false;
         }
         let tail = &self.text[self.cursor + 1..];
@@ -463,5 +469,15 @@ mod tests {
         );
         assert_eq!(result.entries[1].title(), Some("Line\n@example.org\nEnd"));
         assert!(result.malformed.is_empty());
+    }
+
+    #[test]
+    fn repeated_at_signs_in_long_values_do_not_trigger_entry_recovery() {
+        let title = "user@example.org ".repeat(20_000);
+        let text = format!("@book{{first,title={{{title}}}}}\n@book{{broken,title={{unclosed\n\u{2003}@article{{last,title={{Recovered}}}}");
+        let result = parse(&text);
+        assert_eq!(result.entries[0].title(), Some(title.as_str()));
+        assert_eq!(result.entries[2].title(), Some("Recovered"));
+        assert_eq!(result.malformed.len(), 1);
     }
 }

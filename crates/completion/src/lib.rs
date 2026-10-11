@@ -1,7 +1,12 @@
 //! Versioned completion candidates, local TeX providers, and atomic edit plans.
 
 use ligature_buffer::{DocumentId, Revision};
-use std::{collections::BTreeMap, ops::Range};
+use std::{
+    borrow::Cow,
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet},
+    ops::Range,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Target {
@@ -103,24 +108,52 @@ pub fn local<'a>(context: &Context, labels: impl Iterator<Item = &'a str>, citat
         Kind::Label => Box::new(labels),
         Kind::Citation => Box::new(citations),
     };
-    rank(
-        names
-            .map(|name| Candidate {
-                label: name.into(),
-                detail: format!("{:?}", context.kind),
-                filter: name.into(),
-                sort: name.into(),
-                edit: Edit {
-                    range: context.range.clone(),
-                    text: name.into(),
-                },
-                additional: Vec::new(),
-                snippet: false,
-                provider: Provider::Local,
-            })
-            .collect(),
-        &context.prefix,
-    )
+    let prefix = context.prefix.trim_start_matches('\\');
+    let lower = prefix.to_lowercase();
+    let mut unique = BTreeSet::new();
+    let names = names
+        .filter(|name| matches_prefix(name, &lower))
+        .filter(|name| unique.insert(name.trim_start_matches('\\')))
+        .collect();
+    best(names, |a: &&str, b: &&str| priority(a, prefix).cmp(&priority(b, prefix)).then(a.cmp(b)))
+        .into_iter()
+        .map(|name| Candidate {
+            label: name.into(),
+            detail: format!("{:?}", context.kind),
+            filter: name.into(),
+            sort: name.into(),
+            edit: Edit {
+                range: context.range.clone(),
+                text: name.into(),
+            },
+            additional: Vec::new(),
+            snippet: false,
+            provider: Provider::Local,
+        })
+        .collect()
+}
+
+fn matches_prefix(filter: &str, lower: &str) -> bool {
+    let filter = filter.trim_start_matches('\\');
+    if filter.is_ascii() {
+        filter.get(..lower.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(lower))
+    } else {
+        filter.to_lowercase().starts_with(lower)
+    }
+}
+
+fn priority(filter: &str, prefix: &str) -> (bool, bool) {
+    let filter = filter.trim_start_matches('\\');
+    (filter != prefix, !filter.starts_with(prefix))
+}
+
+fn best<T>(mut items: Vec<T>, compare: impl Fn(&T, &T) -> Ordering + Copy) -> Vec<T> {
+    if items.len() > 200 {
+        items.select_nth_unstable_by(200, compare);
+        items.truncate(200);
+    }
+    items.sort_by(compare);
+    items
 }
 
 pub fn rank(candidates: Vec<Candidate>, prefix: &str) -> Vec<Candidate> {
@@ -128,8 +161,7 @@ pub fn rank(candidates: Vec<Candidate>, prefix: &str) -> Vec<Candidate> {
     let lower = prefix.to_lowercase();
     let mut unique: BTreeMap<String, Candidate> = BTreeMap::new();
     for candidate in candidates {
-        let filter = candidate.filter.trim_start_matches('\\');
-        if !filter.to_lowercase().starts_with(&lower) {
+        if !matches_prefix(&candidate.filter, &lower) {
             continue;
         }
         let key = candidate.label.trim_start_matches('\\').to_owned();
@@ -143,16 +175,12 @@ pub fn rank(candidates: Vec<Candidate>, prefix: &str) -> Vec<Candidate> {
             _ => {}
         }
     }
-    let mut result: Vec<_> = unique.into_values().collect();
-    result.sort_by(|a, b| {
-        let priority = |candidate: &Candidate| {
-            let filter = candidate.filter.trim_start_matches('\\');
-            (filter != prefix, !filter.starts_with(prefix))
-        };
-        priority(a).cmp(&priority(b)).then(a.sort.cmp(&b.sort)).then(a.label.cmp(&b.label))
-    });
-    result.truncate(200);
-    result
+    best(unique.into_values().collect(), |a: &Candidate, b: &Candidate| {
+        priority(&a.filter, prefix)
+            .cmp(&priority(&b.filter, prefix))
+            .then(a.sort.cmp(&b.sort))
+            .then(a.label.cmp(&b.label))
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -163,17 +191,21 @@ pub struct Plan {
     pub caret: usize,
 }
 
-pub fn plan(text: &str, candidate: &Candidate) -> Result<Plan, String> {
-    let snippet = if candidate.snippet {
-        snippet(&candidate.edit.text)?
-    } else {
-        Expansion {
-            text: candidate.edit.text.clone(),
-            placeholders: Vec::new(),
-            mirrors: Vec::new(),
+pub fn validate(text: &str, candidate: &Candidate) -> Result<(), String> {
+    if candidate.additional.is_empty() {
+        if text.get(candidate.edit.range.clone()).is_none() {
+            return Err("Completion contains invalid or overlapping edits".into());
         }
-    };
-    let insert = snippet.text;
+    } else {
+        ordered_edits(text, candidate)?;
+    }
+    if candidate.snippet {
+        snippet(&candidate.edit.text)?;
+    }
+    Ok(())
+}
+
+fn ordered_edits<'a>(text: &str, candidate: &'a Candidate) -> Result<Vec<(bool, &'a Edit)>, String> {
     let mut edits: Vec<_> = candidate.additional.iter().map(|edit| (false, edit)).collect();
     edits.push((true, &candidate.edit));
     edits.sort_by_key(|(_, edit)| (edit.range.start, edit.range.end));
@@ -187,9 +219,25 @@ pub fn plan(text: &str, candidate: &Candidate) -> Result<Plan, String> {
         }
         previous = Some(edit.range.end);
     }
+    Ok(edits)
+}
+
+pub fn plan(text: &str, candidate: &Candidate) -> Result<Plan, String> {
+    let (insert, placeholders, mirrors) = if candidate.snippet {
+        let expansion = snippet(&candidate.edit.text)?;
+        (Cow::Owned(expansion.text), expansion.placeholders, expansion.mirrors)
+    } else {
+        (Cow::Borrowed(candidate.edit.text.as_str()), Vec::new(), Vec::new())
+    };
+    let edits = ordered_edits(text, candidate)?;
     let start = edits.first().unwrap().1.range.start;
     let end = edits.last().unwrap().1.range.end;
-    let mut replacement = String::new();
+    let capacity = end - start - edits.iter().map(|(_, edit)| edit.range.len()).sum::<usize>()
+        + edits
+            .iter()
+            .map(|(primary, edit)| if *primary { insert.len() } else { edit.text.len() })
+            .sum::<usize>();
+    let mut replacement = String::with_capacity(capacity);
     let mut cursor = start;
     let mut insertion = 0;
     for (primary, edit) in edits {
@@ -202,13 +250,11 @@ pub fn plan(text: &str, candidate: &Candidate) -> Result<Plan, String> {
         }
         cursor = edit.range.end;
     }
-    let placeholders = snippet
-        .placeholders
+    let placeholders = placeholders
         .into_iter()
         .map(|range| insertion + range.start..insertion + range.end)
         .collect();
-    let mirrors = snippet
-        .mirrors
+    let mirrors = mirrors
         .into_iter()
         .map(|(index, range)| (index, insertion + range.start..insertion + range.end))
         .collect();

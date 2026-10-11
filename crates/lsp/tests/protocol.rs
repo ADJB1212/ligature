@@ -114,3 +114,26 @@ fn completion_edits_and_diagnostics_convert_from_utf16_to_bytes_and_scalars() {
     );
     assert_eq!(hover(&Value::Null), None);
 }
+
+#[test]
+fn batched_locations_preserve_unsorted_unicode_ranges_and_reject_invalid_items() {
+    let text = "α😀z\r\n".repeat(2048);
+    for (encoding, start, end) in [(Encoding::Utf8, 6, 7), (Encoding::Utf16, 3, 4), (Encoding::Utf32, 2, 3)] {
+        let locations = [2047, 0, 1024, 3];
+        let mut items: Vec<_> = locations
+            .iter()
+            .map(|line| json!({"label":format!("line {line}"),"message":"problem","textEdit":{"range":{"start":{"line":line,"character":start},"end":{"line":line,"character":end}},"newText":"replacement"},"range":{"start":{"line":line,"character":start},"end":{"line":line,"character":end}}}))
+            .collect();
+        items.push(json!({"label":"invalid","message":"invalid","textEdit":{"range":{"start":{"line":9000,"character":0},"end":{"line":9000,"character":0}},"newText":"x"},"range":{"start":{"line":9000,"character":0},"end":{"line":9000,"character":0}}}));
+        let items = Value::Array(items);
+        let candidates = completions(&text, &items, 0..0, encoding);
+        let messages = diagnostics(&text, std::path::Path::new("/project/main.tex"), &items, encoding);
+        assert_eq!(candidates.len(), locations.len());
+        assert_eq!(messages.len(), locations.len());
+        for ((candidate, diagnostic), line) in candidates.iter().zip(&messages).zip(locations) {
+            let expected = line * 9 + 6..line * 9 + 7;
+            assert_eq!(candidate.edit.range, expected);
+            assert_eq!(diagnostic.range.as_ref().unwrap().byte_range(&text), Some(expected));
+        }
+    }
+}

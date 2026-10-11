@@ -199,26 +199,17 @@ impl Editor {
     pub fn set_diagnostics<'a>(
         &mut self, diagnostics: impl IntoIterator<Item = &'a ligature_diagnostics::Diagnostic>, stale: bool, cx: &mut Context<Self>,
     ) {
-        let diagnostics: Vec<_> = diagnostics.into_iter().collect();
-        self.assistance.build_messages = if stale {
-            Vec::new()
-        } else {
-            diagnostics
-                .iter()
-                .filter_map(|diagnostic| Some((self.diagnostic_byte_range(diagnostic)?, diagnostic.message.clone())))
-                .collect()
-        };
-        let ranges = if stale {
-            Vec::new()
-        } else {
-            diagnostics
-                .into_iter()
-                .filter_map(|diagnostic| {
-                    let range = self.diagnostic_byte_range(diagnostic)?;
-                    Some((range, diagnostic.severity))
-                })
-                .collect()
-        };
+        let mut messages = Vec::new();
+        let mut ranges = Vec::new();
+        if !stale {
+            for diagnostic in diagnostics {
+                if let Some(range) = self.diagnostic_byte_range(diagnostic) {
+                    messages.push((range.clone(), diagnostic.message.clone()));
+                    ranges.push((range, diagnostic.severity));
+                }
+            }
+        }
+        self.assistance.build_messages = messages;
         let revision = self.state.buffer().revision();
         if self.diagnostics != ranges || self.diagnostic_revision != Some(revision) {
             self.diagnostics = ranges;
@@ -870,6 +861,11 @@ impl Editor {
         let selection = self.state.selection();
         let marked = self.state.marked_range();
         let caret_line = self.state.line_index(self.state.caret());
+        let diagnostics = if self.diagnostic_revision == Some(self.state.buffer().revision()) {
+            self.diagnostics.as_slice()
+        } else {
+            &[]
+        };
         window.with_content_mask(Some(gpui::ContentMask { bounds: text_bounds }), |window| {
             for (index, line, _) in &lines {
                 let origin = point(
@@ -910,12 +906,10 @@ impl Editor {
                         .expect("editor text painting failed");
                 }
                 if marked.is_none() {
-                    for (range, severity) in self
-                        .diagnostics
+                    for (range, severity) in diagnostics
                         .iter()
-                        .filter(|_| self.diagnostic_revision == Some(self.state.buffer().revision()))
-                        .cloned()
-                        .chain(self.server_diagnostic_ranges().iter().cloned())
+                        .map(|(range, severity)| (range, *severity))
+                        .chain(self.server_diagnostic_ranges())
                     {
                         if (range.start < line_end && range.end > line.range.start)
                             || (range.is_empty() && range.start >= line.range.start && range.start <= line.range.end)
@@ -1153,6 +1147,25 @@ mod tests {
                     .any(|token| token.category == ligature_syntax::Category::EntryType)
             );
             assert!(editor.structure().is_none());
+        });
+    }
+
+    #[test]
+    fn opaque_caret_lookup_preserves_comment_and_verbatim_boundaries() {
+        let text = "text % comment\n\\verb|literal| tail\n\\begin{verbatim}body\\end{verbatim}";
+        let mut cx = TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new(Buffer::from_text(text), cx));
+        cx.run_until_parked();
+        editor.update(&mut cx, |editor, _| {
+            for caret in 0..=text.len() {
+                editor.state.move_to(caret, false);
+                let expected = editor.syntax_snapshot().unwrap().tokens.iter().any(|token| {
+                    token.range.start < caret
+                        && token.range.end >= caret
+                        && matches!(token.category, ligature_syntax::Category::Comment | ligature_syntax::Category::Verbatim)
+                });
+                assert_eq!(editor.caret_is_opaque(), expected, "caret {caret}");
+            }
         });
     }
 

@@ -1,6 +1,6 @@
 //! Literal TeX document structure extracted from tolerant syntax snapshots.
 
-use std::{collections::BTreeMap, ops::Range};
+use std::{cell::OnceCell, collections::BTreeMap, ops::Range};
 
 use ligature_syntax::{Category, Snapshot};
 
@@ -41,6 +41,7 @@ pub struct Document {
 pub fn parse(snapshot: &Snapshot) -> Document {
     let mut document = Document::default();
     let closing_braces = closing_braces(snapshot);
+    let optional_brackets = OnceCell::new();
     let mut environments = Vec::new();
     let mut environment_positions: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     let mut headings: Vec<usize> = Vec::new();
@@ -77,7 +78,7 @@ pub fn parse(snapshot: &Snapshot) -> Document {
         {
             continue;
         }
-        let Some(argument) = argument(snapshot, &closing_braces, token.range.end) else {
+        let Some(argument) = argument(snapshot, &closing_braces, &optional_brackets, token.range.end) else {
             if matches!(name, "input" | "include" | "subfile") {
                 let tail = &snapshot.text[token.range.end..];
                 let start = token.range.end + tail.len() - tail.trim_start_matches([' ', '\t']).len();
@@ -145,7 +146,7 @@ pub fn parse(snapshot: &Snapshot) -> Document {
                 keys(&snapshot.text, argument.content, &mut document.citations);
                 if name.ends_with('s') {
                     let mut cursor = argument.end;
-                    while let Some(argument) = self::argument(snapshot, &closing_braces, cursor) {
+                    while let Some(argument) = self::argument(snapshot, &closing_braces, &optional_brackets, cursor) {
                         keys(&snapshot.text, argument.content, &mut document.citations);
                         cursor = argument.end;
                     }
@@ -244,7 +245,45 @@ fn closing_braces(snapshot: &Snapshot) -> Vec<Range<usize>> {
     closing
 }
 
-fn argument(snapshot: &Snapshot, closing_braces: &[Range<usize>], mut cursor: usize) -> Option<Argument> {
+fn optional_brackets(text: &str) -> Vec<Range<usize>> {
+    let delimiters: Vec<_> = text
+        .bytes()
+        .enumerate()
+        .filter(|(_, byte)| matches!(byte, b'[' | b']' | b'{' | b'}' | b'\\' | b'%' | b'\n'))
+        .collect();
+    let mut braces = vec![None; delimiters.len() + 1];
+    let mut brackets = vec![None; delimiters.len() + 1];
+    let mut next_line = delimiters.len();
+    // Resolve suffixes backwards so nested and incomplete arguments share scans.
+    for index in (0..delimiters.len()).rev() {
+        let next =
+            index + 1 + usize::from(delimiters[index].1 == b'\\' && delimiters.get(index + 1).is_some_and(|next| next.0 == delimiters[index].0 + 1));
+        braces[index] = match delimiters[index].1 {
+            b'}' => Some(index + 1),
+            b'{' => braces[index + 1].and_then(|end| braces[end]),
+            b'%' => braces[next_line],
+            _ => braces[next],
+        };
+        brackets[index] = match delimiters[index].1 {
+            b']' => Some(index + 1),
+            b'[' => brackets[index + 1].and_then(|end| brackets[end]),
+            b'{' => braces[index + 1].and_then(|end| brackets[end]),
+            b'%' => brackets[next_line],
+            _ => brackets[next],
+        };
+        if delimiters[index].1 == b'\n' {
+            next_line = index + 1;
+        }
+    }
+    delimiters
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, byte))| *byte == b'[')
+        .map(|(index, &(start, _))| start..brackets[index + 1].map_or(usize::MAX, |end| delimiters[end - 1].0 + 1))
+        .collect()
+}
+
+fn argument(snapshot: &Snapshot, closing_braces: &[Range<usize>], optional: &OnceCell<Vec<Range<usize>>>, mut cursor: usize) -> Option<Argument> {
     let text = &snapshot.text;
     if text[cursor..].starts_with('*') {
         cursor += 1;
@@ -260,31 +299,12 @@ fn argument(snapshot: &Snapshot, closing_braces: &[Range<usize>], mut cursor: us
         if text.as_bytes().get(cursor) != Some(&b'[') {
             break;
         }
-        let mut depth = 1usize;
-        let mut braces = 0usize;
-        cursor += 1;
-        while cursor < text.len() && depth > 0 {
-            match text.as_bytes()[cursor] {
-                b'\\' => {
-                    cursor += 1;
-                    cursor += text[cursor..].chars().next().map_or(0, char::len_utf8);
-                    continue;
-                }
-                b'%' => {
-                    cursor += text[cursor..].find('\n').unwrap_or(text.len() - cursor);
-                    continue;
-                }
-                b'{' => braces += 1,
-                b'}' => braces = braces.saturating_sub(1),
-                b'[' if braces == 0 => depth += 1,
-                b']' if braces == 0 => depth -= 1,
-                _ => {}
-            }
-            cursor += 1;
-        }
-        if depth > 0 {
+        let brackets = optional.get_or_init(|| optional_brackets(text));
+        let opening = brackets.binary_search_by_key(&cursor, |range| range.start).ok()?;
+        if brackets[opening].end == usize::MAX {
             return None;
         }
+        cursor = brackets[opening].end;
     }
     if text.as_bytes().get(cursor) != Some(&b'{') {
         return None;
@@ -331,6 +351,78 @@ mod tests {
         assert_eq!(document.headings[2].parent, None);
         assert_eq!(&text[document.headings[1].title_range.clone()], "Nested {Title}");
         assert_eq!(document.labels[0].name, "last");
+    }
+
+    #[test]
+    fn optional_arguments_preserve_nested_braces_comments_and_escaped_delimiters() {
+        for optional in [
+            "[short]",
+            "[[nested]]",
+            "[{ignore ] [ in braces}]",
+            "[\\] escaped]",
+            "[\\{ escaped brace]",
+            "[% ignored ]\nshort]",
+            "[% ignored ]\\\nshort]",
+            "[\\% literal percent]",
+            "[} unmatched closing brace]",
+            "[{\\} escaped closing brace}]",
+            "[\\😀 Unicode escape]",
+        ] {
+            let text = format!("\\section{optional}{{Title}}\\ref{optional}{{key}}");
+            let parsed = document(&text);
+            assert_eq!(parsed.headings[0].title, "Title", "{optional}");
+            assert_eq!(parsed.references[0].name, "key", "{optional}");
+        }
+        for optional in ["[unclosed", "[{unclosed]", "[[nested]", "[\\]", "[% comment ]"] {
+            let parsed = document(&format!("\\section{optional}"));
+            assert!(parsed.headings.is_empty(), "{optional}");
+        }
+        let parsed = document("\\verb|%| \\section[short]{Title}");
+        assert_eq!(parsed.headings[0].title, "Title");
+    }
+
+    #[test]
+    fn repeated_unclosed_optional_arguments_do_not_create_references() {
+        for command in ["\\ref[", "\\ref[{"] {
+            let parsed = document(&command.repeat(10_000));
+            assert!(parsed.references.is_empty());
+        }
+    }
+
+    #[test]
+    fn indexed_optional_boundaries_match_scanning_for_malformed_delimiters() {
+        let mut seed = 1u64;
+        for _ in 0..256 {
+            let text: String = (0..48)
+                .map(|_| {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    ['[', ']', '{', '}', '\\', '%', '\n', 'a'][(seed >> 32) as usize % 8]
+                })
+                .collect();
+            for range in optional_brackets(&text) {
+                let (mut cursor, mut depth, mut braces) = (range.start + 1, 1usize, 0usize);
+                while cursor < text.len() && depth > 0 {
+                    match text.as_bytes()[cursor] {
+                        b'\\' => {
+                            cursor += 1;
+                            cursor += usize::from(cursor < text.len());
+                            continue;
+                        }
+                        b'%' => {
+                            cursor += text[cursor..].find('\n').unwrap_or(text.len() - cursor);
+                            continue;
+                        }
+                        b'{' => braces += 1,
+                        b'}' => braces = braces.saturating_sub(1),
+                        b'[' if braces == 0 => depth += 1,
+                        b']' if braces == 0 => depth -= 1,
+                        _ => {}
+                    }
+                    cursor += 1;
+                }
+                assert_eq!(range.end, if depth == 0 { cursor } else { usize::MAX }, "{text:?}, start {}", range.start);
+            }
+        }
     }
 
     #[test]

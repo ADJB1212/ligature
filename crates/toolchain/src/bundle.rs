@@ -18,6 +18,20 @@ impl LocalBundle {
     }
 
     pub(crate) fn open_with_checksum(path: &Path, checksum: &str) -> Result<Self, String> {
+        let (file, digest) = Self::hashed_file(path)?;
+        if digest != checksum {
+            return Err(installation_error(path, "bundled TeX resource checksum mismatch"));
+        }
+        Self::from_file(file, path)
+    }
+
+    pub(crate) fn checksum_and_validate(path: &Path) -> Result<String, String> {
+        let (file, digest) = Self::hashed_file(path)?;
+        Self::from_file(file, path)?;
+        Ok(digest)
+    }
+
+    fn hashed_file(path: &Path) -> Result<(File, String), String> {
         let mut file = File::open(path).map_err(|error| installation_error(path, error))?;
         let mut hash = Sha256::new();
         let mut buffer = [0; 65536];
@@ -28,10 +42,11 @@ impl LocalBundle {
             }
             hash.update(&buffer[..length]);
         }
-        if hex::encode(hash.finalize()) != checksum {
-            return Err(installation_error(path, "bundled TeX resource checksum mismatch"));
-        }
         file.seek(SeekFrom::Start(0)).map_err(|error| installation_error(path, error))?;
+        Ok((file, hex::encode(hash.finalize())))
+    }
+
+    fn from_file(file: File, path: &Path) -> Result<Self, String> {
         let archive = ZipArchive::new(file).map_err(|error| installation_error(path, error))?;
         Ok(Self { archive })
     }

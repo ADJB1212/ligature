@@ -113,10 +113,14 @@ pub fn position(text: &str, offset: usize, encoding: Encoding) -> Option<Positio
 
 fn offset(text: &str, position: Position, encoding: Encoding) -> Option<usize> {
     let range = lines(text).nth(position.line)?;
+    offset_in_line(text, range, position.character, encoding)
+}
+
+fn offset_in_line(text: &str, range: Range<usize>, character: usize, encoding: Encoding) -> Option<usize> {
     let line = &text[range.clone()];
     let mut column = 0;
     for (index, c) in line.char_indices() {
-        if column == position.character {
+        if column == character {
             return Some(range.start + index);
         }
         column += match encoding {
@@ -124,11 +128,44 @@ fn offset(text: &str, position: Position, encoding: Encoding) -> Option<usize> {
             Encoding::Utf16 => c.len_utf16(),
             Encoding::Utf32 => 1,
         };
-        if column > position.character {
+        if column > character {
             return None;
         }
     }
-    (column == position.character).then_some(range.end)
+    (column == character).then_some(range.end)
+}
+
+struct LineIndex<'a> {
+    text: &'a str,
+    lines: Vec<Range<usize>>,
+}
+
+impl<'a> LineIndex<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            lines: lines(text).collect(),
+        }
+    }
+
+    fn offset(&self, value: &Value, encoding: Encoding) -> Option<usize> {
+        let position: Position = serde_json::from_value(value.clone()).ok()?;
+        offset_in_line(self.text, self.lines.get(position.line)?.clone(), position.character, encoding)
+    }
+
+    fn byte_range(&self, value: &Value, encoding: Encoding) -> Option<Range<usize>> {
+        let start = self.offset(value.get("start")?, encoding)?;
+        let end = self.offset(value.get("end")?, encoding)?;
+        (start <= end).then_some(start..end)
+    }
+
+    fn scalar_position(&self, offset: usize) -> SourcePosition {
+        let line = self.lines.partition_point(|range| range.start <= offset) - 1;
+        SourcePosition {
+            line: line + 1,
+            column: self.text[self.lines[line].start..offset].chars().count() + 1,
+        }
+    }
 }
 
 pub fn completion_position(text: &str, caret: usize, encoding: Encoding) -> Option<Position> {
@@ -234,6 +271,10 @@ pub fn completions(text: &str, result: &Value, fallback: Range<usize>, encoding:
     let Some(items) = result.as_array().or_else(|| result["items"].as_array()) else {
         return Vec::new();
     };
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let lines = std::cell::LazyCell::new(|| LineIndex::new(text));
     items
         .iter()
         .take(2000)
@@ -244,7 +285,7 @@ pub fn completions(text: &str, result: &Value, fallback: Range<usize>, encoding:
                 .or_else(|| item["insertText"].as_str())
                 .unwrap_or(label);
             let range = if item["textEdit"].is_object() {
-                byte_range(text, item["textEdit"].get("range").or_else(|| item["textEdit"].get("replace"))?, encoding)?
+                lines.byte_range(item["textEdit"].get("range").or_else(|| item["textEdit"].get("replace"))?, encoding)?
             } else {
                 fallback.clone()
             };
@@ -255,7 +296,7 @@ pub fn completions(text: &str, result: &Value, fallback: Range<usize>, encoding:
                         .iter()
                         .map(|edit| {
                             Some(Edit {
-                                range: byte_range(text, &edit["range"], encoding)?,
+                                range: lines.byte_range(&edit["range"], encoding)?,
                                 text: edit["newText"].as_str()?.into(),
                             })
                         })
@@ -275,27 +316,22 @@ pub fn completions(text: &str, result: &Value, fallback: Range<usize>, encoding:
                 snippet: item["insertTextFormat"] == 2,
                 provider: Provider::Server,
             };
-            ligature_completion::plan(text, &candidate).ok()?;
+            ligature_completion::validate(text, &candidate).ok()?;
             Some(candidate)
         })
         .collect()
 }
 
 pub fn diagnostics(text: &str, path: &Path, items: &Value, encoding: Encoding) -> Vec<Diagnostic> {
+    let Some(items) = items.as_array().filter(|items| !items.is_empty()) else {
+        return Vec::new();
+    };
+    let lines = LineIndex::new(text);
     items
-        .as_array()
-        .into_iter()
-        .flatten()
+        .iter()
         .take(2000)
         .filter_map(|item| {
-            let range = byte_range(text, &item["range"], encoding)?;
-            let scalar = |offset| {
-                let position = position(text, offset, Encoding::Utf32).unwrap();
-                SourcePosition {
-                    line: position.line + 1,
-                    column: position.character + 1,
-                }
-            };
+            let range = lines.byte_range(&item["range"], encoding)?;
             Some(Diagnostic {
                 severity: match item["severity"].as_u64().unwrap_or(1) {
                     1 => Severity::Error,
@@ -306,8 +342,8 @@ pub fn diagnostics(text: &str, path: &Path, items: &Value, encoding: Encoding) -
                 message: item["message"].as_str()?.into(),
                 path: Some(path.into()),
                 range: Some(SourceRange::Text {
-                    start: scalar(range.start),
-                    end: scalar(range.end),
+                    start: lines.scalar_position(range.start),
+                    end: lines.scalar_position(range.end),
                 }),
             })
         })

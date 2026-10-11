@@ -19,18 +19,22 @@ pub(super) struct Assistance {
     stop: usize,
     snippet_text: String,
     server_diagnostics: Vec<ligature_diagnostics::Diagnostic>,
-    server_ranges: Vec<(Range<usize>, ligature_diagnostics::Severity)>,
+    server_ranges: Vec<(Range<usize>, usize)>,
     server_revision: Option<ligature_buffer::Revision>,
     pub(super) build_messages: Vec<(Range<usize>, String)>,
     hover_enabled: bool,
 }
 
 impl Editor {
-    pub(super) fn server_diagnostic_ranges(&self) -> &[(Range<usize>, ligature_diagnostics::Severity)] {
-        if self.assistance.server_revision != Some(self.state.buffer().revision()) {
-            return &[];
-        }
-        &self.assistance.server_ranges
+    pub(super) fn server_diagnostic_ranges(&self) -> impl Iterator<Item = (&Range<usize>, ligature_diagnostics::Severity)> {
+        let ranges = if self.assistance.server_revision == Some(self.state.buffer().revision()) {
+            self.assistance.server_ranges.as_slice()
+        } else {
+            &[]
+        };
+        ranges
+            .iter()
+            .map(|(range, index)| (range, self.assistance.server_diagnostics[*index].severity))
     }
     fn target(&mut self) -> Target {
         self.assistance.serial += 1;
@@ -67,17 +71,21 @@ impl Editor {
     }
 
     pub fn hover_available(&self) -> bool {
-        !self.read_only && (self.assistance.hover_enabled || !self.diagnostic_messages(self.state.caret()).is_empty())
+        !self.read_only && (self.assistance.hover_enabled || self.messages_at(self.state.caret()).next().is_some())
+    }
+
+    pub(super) fn caret_is_opaque(&self) -> bool {
+        self.syntax_snapshot().is_some_and(|snapshot| {
+            let caret = self.state.caret();
+            let index = snapshot.tokens.partition_point(|token| token.range.end < caret);
+            snapshot.tokens.get(index).is_some_and(|token| {
+                token.range.start < caret && matches!(token.category, ligature_syntax::Category::Comment | ligature_syntax::Category::Verbatim)
+            })
+        })
     }
 
     pub(super) fn suppress_opaque_assistance(&mut self) {
-        if self.syntax_snapshot().is_some_and(|snapshot| {
-            snapshot.tokens.iter().any(|token| {
-                matches!(token.category, ligature_syntax::Category::Comment | ligature_syntax::Category::Verbatim)
-                    && token.range.start < self.state.caret()
-                    && token.range.end >= self.state.caret()
-            })
-        }) {
+        if self.caret_is_opaque() {
             self.dismiss_assistance();
         }
     }
@@ -92,7 +100,8 @@ impl Editor {
         if self.assistance.server_diagnostics != diagnostics || self.assistance.server_revision != Some(revision) {
             self.assistance.server_ranges = diagnostics
                 .iter()
-                .filter_map(|diagnostic| Some((self.diagnostic_byte_range(diagnostic)?, diagnostic.severity)))
+                .enumerate()
+                .filter_map(|(index, diagnostic)| Some((self.diagnostic_byte_range(diagnostic)?, index)))
                 .collect();
             self.assistance.server_diagnostics = diagnostics;
             self.assistance.server_revision = Some(revision);
@@ -101,32 +110,31 @@ impl Editor {
     }
 
     pub fn diagnostic_messages(&self, offset: usize) -> Vec<String> {
-        let mut messages = Vec::new();
-        if self.diagnostic_revision == Some(self.state.buffer().revision()) {
-            messages.extend(
-                self.assistance
-                    .build_messages
+        self.messages_at(offset).map(str::to_owned).collect()
+    }
+
+    fn messages_at(&self, offset: usize) -> impl Iterator<Item = &str> {
+        let revision = self.state.buffer().revision();
+        let build = if self.diagnostic_revision == Some(revision) {
+            self.assistance.build_messages.as_slice()
+        } else {
+            &[]
+        };
+        let server = if self.assistance.server_revision == Some(revision) {
+            self.assistance.server_ranges.as_slice()
+        } else {
+            &[]
+        };
+        build
+            .iter()
+            .filter(move |(range, _)| range.contains(&offset) || range.end == offset)
+            .map(|(_, message)| message.as_str())
+            .chain(
+                server
                     .iter()
-                    .filter(|(range, _)| range.contains(&offset) || range.end == offset)
-                    .map(|(_, message)| message.clone()),
-            );
-        }
-        if self.assistance.server_revision == Some(self.state.buffer().revision()) {
-            messages.extend(
-                self.assistance
-                    .server_diagnostics
-                    .iter()
-                    .filter(|diagnostic| {
-                        diagnostic
-                            .range
-                            .as_ref()
-                            .and_then(|range| range.byte_range(self.state.text()))
-                            .is_some_and(|range| range.contains(&offset) || range.end == offset)
-                    })
-                    .map(|diagnostic| diagnostic.message.clone()),
-            );
-        }
-        messages
+                    .filter(move |(range, _)| range.contains(&offset) || range.end == offset)
+                    .map(|(_, index)| self.assistance.server_diagnostics[*index].message.as_str()),
+            )
     }
 
     pub fn publish_completion(&mut self, target: Target, candidates: Vec<Candidate>, cx: &mut Context<Self>) -> bool {
@@ -177,13 +185,7 @@ impl Editor {
         {
             return;
         }
-        if self.syntax_snapshot().is_some_and(|snapshot| {
-            snapshot.tokens.iter().any(|token| {
-                matches!(token.category, ligature_syntax::Category::Comment | ligature_syntax::Category::Verbatim)
-                    && token.range.start < self.state.caret()
-                    && token.range.end >= self.state.caret()
-            })
-        }) {
+        if self.caret_is_opaque() {
             return;
         }
         let context = ligature_completion::context(self.state.text(), self.state.caret());
