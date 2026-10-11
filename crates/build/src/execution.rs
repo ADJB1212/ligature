@@ -97,6 +97,37 @@ fn failure_diagnostic(id: BuildId, failure: &BuildFailure) -> Diagnostic {
     }
 }
 
+fn diagnostic_key(diagnostic: &Diagnostic) -> (Severity, Option<&std::path::Path>, Option<&ligature_diagnostics::SourceRange>, &str) {
+    (
+        diagnostic.severity,
+        diagnostic.path.as_deref(),
+        diagnostic.range.as_ref(),
+        diagnostic.message.trim_end_matches('.').trim_start_matches("LaTeX Warning: "),
+    )
+}
+
+fn merge_diagnostics(existing: &mut Vec<Diagnostic>, parsed: Vec<Diagnostic>, tex_log_available: bool) {
+    let mut seen: BTreeSet<_> = existing.iter().map(diagnostic_key).collect();
+    let mut has_error = existing.iter().any(|diagnostic| diagnostic.severity == Severity::Error);
+    let keep: Vec<_> = parsed
+        .iter()
+        .map(|diagnostic| {
+            if (tex_log_available && diagnostic.severity == Severity::Warning && diagnostic.path.is_some())
+                || (has_error && diagnostic.severity == Severity::Error && diagnostic.path.is_none())
+            {
+                return false;
+            }
+            if !seen.insert(diagnostic_key(diagnostic)) {
+                return false;
+            }
+            has_error |= diagnostic.severity == Severity::Error;
+            true
+        })
+        .collect();
+    drop(seen);
+    existing.extend(parsed.into_iter().zip(keep).filter_map(|(diagnostic, keep)| keep.then_some(diagnostic)));
+}
+
 impl BuildJob {
     pub fn fail_installation(&self, message: String) {
         let mut shared = self.0.lock().unwrap();
@@ -122,6 +153,10 @@ impl BuildJob {
 
     pub fn snapshot(&self) -> BuildSnapshot {
         self.0.lock().unwrap().snapshot.clone()
+    }
+
+    pub fn state(&self) -> BuildState {
+        self.0.lock().unwrap().snapshot.state
     }
 
     pub fn cancel(&self) {
@@ -168,26 +203,8 @@ impl BuildJob {
                 request.root_document(),
                 shared.snapshot.id,
             );
-            for diagnostic in parsed {
-                if shared.tex_log_available && diagnostic.severity == Severity::Warning && diagnostic.path.is_some() {
-                    continue;
-                }
-                if diagnostic.severity == Severity::Error
-                    && diagnostic.path.is_none()
-                    && shared.snapshot.diagnostics.iter().any(|existing| existing.severity == Severity::Error)
-                {
-                    continue;
-                }
-                if !shared.snapshot.diagnostics.iter().any(|existing| {
-                    existing.severity == diagnostic.severity
-                        && existing.path == diagnostic.path
-                        && existing.range == diagnostic.range
-                        && existing.message.trim_end_matches('.').trim_start_matches("LaTeX Warning: ")
-                            == diagnostic.message.trim_end_matches('.').trim_start_matches("LaTeX Warning: ")
-                }) {
-                    shared.snapshot.diagnostics.push(diagnostic);
-                }
-            }
+            let tex_log_available = shared.tex_log_available;
+            merge_diagnostics(&mut shared.snapshot.diagnostics, parsed, tex_log_available);
             match result {
                 Ok((directory, mut artifacts)) => {
                     artifacts.temporary_source.clone_from(&shared.snapshot.temporary_source);
@@ -220,14 +237,17 @@ impl BuildJob {
         if self.canceled() {
             return Err(failure(FailureKind::Output, "Build canceled".into()));
         }
-        request.create_session(resources).map_err(|message| {
-            let kind = if message.starts_with("Installation error") {
-                FailureKind::Installation
-            } else {
-                FailureKind::Output
-            };
-            failure(kind, message)
-        })?;
+        let bundle = request
+            .create_session(resources)
+            .map_err(|message| {
+                let kind = if message.starts_with("Installation error") {
+                    FailureKind::Installation
+                } else {
+                    FailureKind::Output
+                };
+                failure(kind, message)
+            })?
+            .bundle;
         let _lease = OutputLease::acquire(request.output_directory()).map_err(|message| failure(FailureKind::Output, message))?;
         let sources = Arc::new(crate::SourceSnapshot::capture(&request.project_root, request.output_directory()));
         self.0.lock().unwrap().snapshot.sources = Some(Arc::clone(&sources));
@@ -304,10 +324,7 @@ impl BuildJob {
         if !status.success() {
             let output = self.snapshot().output;
             let message = if let Some(name) = missing_package(&output)
-                && !resources
-                    .validate()
-                    .map_err(|message| failure(FailureKind::Installation, message))?
-                    .contains(&name)
+                && !bundle.contains(&name)
             {
                 format!("Unsupported project package or document class '{name}'. Add project-local files or download the full TeX bundle.")
             } else {
@@ -418,6 +435,46 @@ impl Drop for OutputLease {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merging_diagnostics_preserves_order_and_normalizes_duplicates() {
+        let warning = |message: &str, path: Option<&str>| Diagnostic {
+            severity: Severity::Warning,
+            provider: Provider::Build(BuildId(1)),
+            message: message.into(),
+            path: path.map(PathBuf::from),
+            range: None,
+        };
+        let first = warning("LaTeX Warning: First.", Some("main.tex"));
+        let second = warning("Second", Some("child.tex"));
+        let mut existing = vec![first.clone()];
+        merge_diagnostics(
+            &mut existing,
+            vec![warning("First", Some("main.tex")), second.clone(), second.clone()],
+            false,
+        );
+        assert_eq!(existing, vec![first, second]);
+        let generic = warning("Generic warning", None);
+        merge_diagnostics(&mut existing, vec![warning("Log warning", Some("main.tex")), generic.clone()], true);
+        assert_eq!(existing.last(), Some(&generic));
+        assert_eq!(existing.len(), 3);
+
+        let failure = failure_diagnostic(
+            BuildId(1),
+            &BuildFailure {
+                kind: FailureKind::Typesetting,
+                message: "failed".into(),
+            },
+        );
+        merge_diagnostics(&mut existing, vec![failure.clone(), failure], false);
+        assert_eq!(existing.len(), 4);
+        let located = Diagnostic {
+            path: Some("main.tex".into()),
+            ..existing.last().unwrap().clone()
+        };
+        merge_diagnostics(&mut existing, vec![located.clone()], false);
+        assert_eq!(existing.last(), Some(&located));
+    }
 
     #[test]
     fn installation_failures_have_no_source_location_and_canceled_jobs_have_no_diagnostics() {

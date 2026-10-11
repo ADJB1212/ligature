@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
 use gpui::{Context, IntoElement, Task, Window, div, prelude::*, px};
+use ligature_buffer::{DocumentId, Revision};
 use ligature_project::{Location, SemanticIndex};
 use ligature_theme::{colors, spacing};
 use ligature_ui::{Button, caption, inline_error};
@@ -12,6 +13,44 @@ pub(super) struct SemanticUi {
     pub visible: bool,
     pub index: Arc<SemanticIndex>,
     task: Option<Task<()>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[test]
+    fn semantic_versions_track_edits_paths_and_document_replacement_but_ignore_selection() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(Workspace::new);
+        let workspace = window.root(&mut cx).unwrap();
+        workspace.update(&mut cx, |workspace, cx| {
+            let initial = workspace.semantic_version(cx);
+            workspace
+                .editor
+                .update(cx, |editor, cx| editor.update_state(|state| state.select_all(), cx));
+            assert!(workspace.semantic_version(cx) == initial);
+            workspace
+                .editor
+                .update(cx, |editor, cx| editor.update_state(|state| state.insert("changed", false), cx));
+            assert!(workspace.semantic_version(cx) != initial);
+            let edited = workspace.semantic_version(cx);
+            workspace.document.as_mut().unwrap().path = Some("/project/saved.tex".into());
+            assert!(workspace.semantic_version(cx) != edited);
+            let saved = workspace.semantic_version(cx);
+            workspace
+                .editor
+                .update(cx, |editor, cx| editor.set_buffer(ligature_buffer::Buffer::from_text("changed"), cx));
+            assert!(workspace.semantic_version(cx) != saved);
+        });
+    }
+}
+
+#[derive(PartialEq, Eq)]
+struct SemanticVersion {
+    root: PathBuf,
+    documents: Vec<(Option<PathBuf>, DocumentId, Revision)>,
 }
 
 impl Workspace {
@@ -40,19 +79,38 @@ impl Workspace {
         Some((root, text))
     }
 
+    fn semantic_version(&self, cx: &gpui::App) -> Option<SemanticVersion> {
+        self.document.as_ref()?;
+        let root = self
+            .project
+            .as_ref()
+            .and_then(|project| project.root_document.as_ref().map(|path| project.root.join(path)))
+            .unwrap_or_else(|| self.semantic_path(cx));
+        let documents = self
+            .tabs
+            .iter()
+            .map(|tab| {
+                let (document, editor) = tab
+                    .as_ref()
+                    .map_or((self.document.as_ref(), &self.editor), |tab| (Some(&tab.document), &tab.editor));
+                let buffer = editor.read(cx).state().buffer();
+                (document.and_then(|document| document.path.clone()), buffer.id(), buffer.revision())
+            })
+            .collect();
+        Some(SemanticVersion { root, documents })
+    }
+
     pub(super) fn queue_semantics(&mut self, cx: &mut Context<Self>) {
         self.semantic_ui.task = Some(cx.spawn(async move |this, cx| {
             loop {
                 let Ok(inputs) = this.update(cx, |workspace, cx| {
                     workspace
                         .semantic_inputs(cx)
-                        .map(|(root, text)| (root, text, Arc::clone(&workspace.semantic_ui.index)))
+                        .map(|(root, text)| (root, text, workspace.semantic_version(cx), Arc::clone(&workspace.semantic_ui.index)))
                 }) else {
                     break;
                 };
-                if let Some((root, text, previous)) = inputs {
-                    let expected_root = root.clone();
-                    let expected_text = text.clone();
+                if let Some((root, text, version, previous)) = inputs {
                     let index = cx
                         .background_executor()
                         .spawn(async move {
@@ -65,11 +123,7 @@ impl Workspace {
                         .await;
                     if this
                         .update(cx, |workspace, cx| {
-                            if workspace
-                                .semantic_inputs(cx)
-                                .is_some_and(|(root, text)| root == expected_root && text == expected_text)
-                                && workspace.semantic_ui.index.as_ref() != &index
-                            {
+                            if workspace.semantic_version(cx) == version && workspace.semantic_ui.index.as_ref() != &index {
                                 workspace.semantic_ui.index = Arc::new(index);
                                 cx.notify();
                             }

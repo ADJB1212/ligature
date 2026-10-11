@@ -1,6 +1,6 @@
 //! Literal TeX document structure extracted from tolerant syntax snapshots.
 
-use std::ops::Range;
+use std::{collections::BTreeMap, ops::Range};
 
 use ligature_syntax::{Category, Snapshot};
 
@@ -40,7 +40,9 @@ pub struct Document {
 
 pub fn parse(snapshot: &Snapshot) -> Document {
     let mut document = Document::default();
+    let closing_braces = closing_braces(snapshot);
     let mut environments = Vec::new();
+    let mut environment_positions: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     let mut headings: Vec<usize> = Vec::new();
     for token in snapshot.tokens.iter().filter(|token| token.category == Category::Command) {
         let name = snapshot.text[token.range.clone()].trim_start_matches('\\');
@@ -75,7 +77,7 @@ pub fn parse(snapshot: &Snapshot) -> Document {
         {
             continue;
         }
-        let Some(argument) = argument(snapshot, token.range.end) else {
+        let Some(argument) = argument(snapshot, &closing_braces, token.range.end) else {
             if matches!(name, "input" | "include" | "subfile") {
                 let tail = &snapshot.text[token.range.end..];
                 let start = token.range.end + tail.len() - tail.trim_start_matches([' ', '\t']).len();
@@ -112,8 +114,10 @@ pub fn parse(snapshot: &Snapshot) -> Document {
         }
         match name {
             "begin" => {
+                let name = clean(&snapshot.text[argument.content]);
+                environment_positions.entry(name.clone()).or_default().push(environments.len());
                 document.environments.push(Environment {
-                    name: clean(&snapshot.text[argument.content]),
+                    name,
                     begin: range,
                     end: None,
                     parent: environments.last().copied(),
@@ -122,9 +126,11 @@ pub fn parse(snapshot: &Snapshot) -> Document {
             }
             "end" => {
                 let name = clean(&snapshot.text[argument.content]);
-                if let Some(position) = environments.iter().rposition(|&index| document.environments[index].name == name) {
+                if let Some(position) = environment_positions.get(&name).and_then(|positions| positions.last()).copied() {
                     document.environments[environments[position]].end = Some(range);
-                    environments.truncate(position);
+                    for index in environments.drain(position..) {
+                        environment_positions.get_mut(&document.environments[index].name).unwrap().pop();
+                    }
                 }
             }
             "label" => keys(&snapshot.text, argument.content, &mut document.labels),
@@ -139,7 +145,7 @@ pub fn parse(snapshot: &Snapshot) -> Document {
                 keys(&snapshot.text, argument.content, &mut document.citations);
                 if name.ends_with('s') {
                     let mut cursor = argument.end;
-                    while let Some(argument) = self::argument(snapshot, cursor) {
+                    while let Some(argument) = self::argument(snapshot, &closing_braces, cursor) {
                         keys(&snapshot.text, argument.content, &mut document.citations);
                         cursor = argument.end;
                     }
@@ -152,28 +158,28 @@ pub fn parse(snapshot: &Snapshot) -> Document {
 }
 
 fn citation_command(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    let name = name.strip_suffix('s').unwrap_or(&name);
-    matches!(
-        name,
-        "cite"
-            | "citep"
-            | "citet"
-            | "citealt"
-            | "citealp"
-            | "citeauthor"
-            | "citeyear"
-            | "citeyearpar"
-            | "nocite"
-            | "parencite"
-            | "textcite"
-            | "autocite"
-            | "footcite"
-            | "smartcite"
-            | "supercite"
-            | "fullcite"
-            | "footfullcite"
-    )
+    let name = name.strip_suffix(['s', 'S']).unwrap_or(name);
+    [
+        "cite",
+        "citep",
+        "citet",
+        "citealt",
+        "citealp",
+        "citeauthor",
+        "citeyear",
+        "citeyearpar",
+        "nocite",
+        "parencite",
+        "textcite",
+        "autocite",
+        "footcite",
+        "smartcite",
+        "supercite",
+        "fullcite",
+        "footfullcite",
+    ]
+    .iter()
+    .any(|command| name.eq_ignore_ascii_case(command))
 }
 
 fn clean(text: &str) -> String {
@@ -191,8 +197,13 @@ fn clean(text: &str) -> String {
             line[..end].trim()
         })
         .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
+        .fold(String::new(), |mut result, line| {
+            if !result.is_empty() {
+                result.push(' ');
+            }
+            result.push_str(line);
+            result
+        })
 }
 
 fn keys(text: &str, range: Range<usize>, result: &mut Vec<Key>) {
@@ -216,7 +227,24 @@ struct Argument {
     closed: bool,
 }
 
-fn argument(snapshot: &Snapshot, mut cursor: usize) -> Option<Argument> {
+fn closing_braces(snapshot: &Snapshot) -> Vec<Range<usize>> {
+    let mut closing: Vec<Range<usize>> = Vec::new();
+    let mut opening = Vec::new();
+    for token in &snapshot.tokens {
+        if token.category != Category::Brace {
+            continue;
+        }
+        if snapshot.text.as_bytes()[token.range.start] == b'{' {
+            opening.push(closing.len());
+            closing.push(token.range.start..usize::MAX);
+        } else if let Some(start) = opening.pop() {
+            closing[start].end = token.range.end;
+        }
+    }
+    closing
+}
+
+fn argument(snapshot: &Snapshot, closing_braces: &[Range<usize>], mut cursor: usize) -> Option<Argument> {
     let text = &snapshot.text;
     if text[cursor..].starts_with('*') {
         cursor += 1;
@@ -262,23 +290,15 @@ fn argument(snapshot: &Snapshot, mut cursor: usize) -> Option<Argument> {
         return None;
     }
     let start = cursor + 1;
-    let mut depth = 1usize;
-    let first = snapshot.tokens.partition_point(|token| token.range.end <= start);
-    for token in &snapshot.tokens[first..] {
-        if token.category == Category::Brace {
-            if &text[token.range.clone()] == "{" {
-                depth += 1;
-            } else {
-                depth -= 1;
-            }
-            if depth == 0 {
-                return Some(Argument {
-                    content: start..token.range.start,
-                    end: token.range.end,
-                    closed: true,
-                });
-            }
-        }
+    if let Ok(opening) = closing_braces.binary_search_by_key(&cursor, |range| range.start)
+        && closing_braces[opening].end != usize::MAX
+    {
+        let end = closing_braces[opening].end;
+        return Some(Argument {
+            content: start..end - 1,
+            end,
+            closed: true,
+        });
     }
     let end = start + text[start..].find('\n').unwrap_or(text.len() - start);
     Some(Argument {

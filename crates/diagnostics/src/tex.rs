@@ -149,14 +149,14 @@ impl Parser<'_> {
             let token = if let Some(quoted) = remaining.strip_prefix('"') {
                 quoted.split_once('"').map(|(name, _)| name)
             } else {
+                let candidate = remaining.split(['(', ')']).next().unwrap_or_default();
                 [".tex", ".sty", ".cls", ".clo", ".ltx", ".aux", ".def", ".fd", ".cfg"]
                     .iter()
-                    .filter_map(|extension| remaining.find(extension).map(|index| &remaining[..index + extension.len()]))
-                    .filter(|name| !name.contains(['(', ')', '\n']))
+                    .filter_map(|extension| candidate.find(extension).map(|index| &candidate[..index + extension.len()]))
                     .min_by_key(|name| name.len())
                     .or_else(|| {
-                        let name = remaining.split(['(', ')']).next()?;
-                        (!name.is_empty() && !name.contains([':', '\\', '=']) && name.chars().any(char::is_alphabetic)).then_some(name)
+                        (!candidate.is_empty() && !candidate.contains([':', '\\', '=']) && candidate.chars().any(char::is_alphabetic))
+                            .then_some(candidate)
                     })
             };
             let path = token.filter(|name| !name.is_empty()).map(|name| source_path(self.directory, name));
@@ -226,6 +226,15 @@ fn resolve(directory: &Path, path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deeply_nested_context_preserves_the_innermost_source_location() {
+        let log = format!("{}(child.tex\n! Undefined control sequence.\nl.4 \\missing\n", "(".repeat(10_000));
+        let diagnostics = parse_tex(&log, Path::new("/project"), Path::new("main.tex"), BuildId(1));
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].path.as_deref(), Some(Path::new("/project/child.tex")));
+        assert_eq!(diagnostics[0].range, Some(SourceRange::Lines { start: 4, end: 4 }));
+    }
 
     fn parse(log: &str) -> Vec<Diagnostic> {
         parse_tex(log, Path::new("/project"), Path::new("main.tex"), BuildId(9))

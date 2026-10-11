@@ -62,7 +62,7 @@ impl BuildUi {
     pub fn running(&self) -> bool {
         self.job
             .as_ref()
-            .is_some_and(|job| matches!(job.snapshot().state, BuildState::Idle | BuildState::Running))
+            .is_some_and(|job| matches!(job.state(), BuildState::Idle | BuildState::Running))
     }
 
     pub fn reset(&mut self) {
@@ -381,12 +381,13 @@ impl Workspace {
                 },
             );
             entries = entries.child(caption(format!("{name} - {severity:?}")));
+            let stale = diagnostics.first().is_some_and(|diagnostic| self.diagnostic_stale(diagnostic, cx));
             for diagnostic in diagnostics {
                 let location = diagnostic
                     .range
                     .as_ref()
                     .map_or(String::new(), |range| format!("Line {}: ", range.first_line()));
-                let stale = if self.diagnostic_stale(diagnostic, cx) { " (older source)" } else { "" };
+                let stale = if stale { " (older source)" } else { "" };
                 let provider = match &diagnostic.provider {
                     ligature_diagnostics::Provider::Build(id) => format!("Build {}", id.0),
                     ligature_diagnostics::Provider::LanguageServer(name) => format!("Language server: {name}"),

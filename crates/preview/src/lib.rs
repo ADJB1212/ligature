@@ -4,7 +4,7 @@ mod state;
 pub use state::Zoom;
 
 use gpui::{
-    App, Bounds, Context, EventEmitter, FocusHandle, Focusable, IntoElement, KeyBinding, MouseButton, Pixels, Point, Render, RenderImage, Task,
+    App, Bounds, Context, EventEmitter, FocusHandle, Focusable, IntoElement, KeyBinding, MouseButton, Pixels, Point, Render, RenderImage, Size, Task,
     Window, actions, canvas, div, fill, point, prelude::*, px, size,
 };
 use ligature_pdf::{Document, Page};
@@ -12,7 +12,7 @@ use ligature_synctex::{Mapping, PdfPosition, SourcePosition};
 use ligature_theme::{colors, spacing};
 use ligature_ui::{Button, Indicator, caption, chrome_strip, indicator, inline_error};
 use state::{Cache, RenderKey, accepts, raster_scale, zoom_anchor};
-use std::{path::PathBuf, sync::Arc};
+use std::{ops::Range, path::PathBuf, sync::Arc};
 
 actions!(ligature_preview, [ZoomIn, ZoomOut, FitWidth, FitPage]);
 
@@ -37,6 +37,8 @@ pub struct Preview {
     scale: f64,
     density: f64,
     viewport: Bounds<Pixels>,
+    layout: Vec<Bounds<Pixels>>,
+    content_size: Size<Pixels>,
     pan: Point<Pixels>,
     cache: Cache<Arc<RenderImage>>,
     images: Vec<(RenderKey, Arc<RenderImage>)>,
@@ -65,6 +67,8 @@ impl Preview {
             scale: 1.0,
             density: 1.0,
             viewport: Bounds::default(),
+            layout: Vec::new(),
+            content_size: Size::default(),
             pan: Point::default(),
             cache: Cache::new(ligature_pdf::MAX_RASTER_BYTES),
             images: Vec::new(),
@@ -83,6 +87,8 @@ impl Preview {
         self.load_generation += 1;
         self.load_task = None;
         self.document = None;
+        self.layout.clear();
+        self.content_size = Size::default();
         self.page = 0;
         self.pan = Point::default();
         self.mapping = None;
@@ -228,18 +234,17 @@ impl Preview {
         }
     }
 
-    fn visible_pages(&self) -> Vec<usize> {
-        self.page_layout()
-            .into_iter()
-            .enumerate()
-            .filter(|(_, bounds)| bounds.origin.y < self.viewport.bottom() && bounds.bottom() > self.viewport.origin.y)
-            .map(|(page, _)| page)
-            .collect()
+    fn visible_pages(&self) -> Range<usize> {
+        let first = self.layout.partition_point(|bounds| bounds.bottom() <= self.pan.y);
+        let end = self
+            .layout
+            .partition_point(|bounds| bounds.origin.y < self.pan.y + self.viewport.size.height);
+        first..end.max(first)
     }
 
     fn schedule(&mut self, cx: &mut Context<Self>) {
         let visible = self.visible_pages();
-        let keys: Vec<_> = visible.iter().map(|page| self.key(*page)).collect();
+        let keys: Vec<_> = visible.map(|page| self.key(page)).collect();
         self.images.retain(|(key, _)| keys.contains(key));
         for key in &keys {
             if !self.images.iter().any(|(cached, _)| cached == key)
@@ -322,6 +327,7 @@ impl Preview {
         }
         let width = f64::from(f32::from(self.viewport.size.width));
         let height = f64::from(f32::from(self.viewport.size.height));
+        self.rebuild_layout();
         let scale = self
             .document
             .as_ref()
@@ -337,60 +343,64 @@ impl Preview {
                 zoom_anchor(-f64::from(f32::from(origin.y)), height, self.scale, scale),
             );
             self.scale = scale;
+            self.rebuild_layout();
             self.pan += self.page_inset();
         }
         self.clamp_pan();
     }
 
     fn clamp_pan(&mut self) {
-        let Some(document) = &self.document else {
+        if self.document.is_none() {
             return;
-        };
-        let width = document.pages().iter().map(|page| page.display_size().0).fold(0.0, f64::max);
-        let height = document.pages().iter().map(|page| page.display_size().1 * self.scale + 12.0).sum::<f64>() + 12.0;
-        self.pan.x = self.pan.x.clamp(
-            px(0.0),
-            px((width * self.scale + 24.0 - f64::from(f32::from(self.viewport.size.width))).max(0.0) as f32),
-        );
+        }
+        self.pan.x = self
+            .pan
+            .x
+            .clamp(px(0.0), (self.content_size.width - self.viewport.size.width).max(px(0.0)));
         self.pan.y = self
             .pan
             .y
-            .clamp(px(0.0), px((height - f64::from(f32::from(self.viewport.size.height))).max(0.0) as f32));
+            .clamp(px(0.0), (self.content_size.height - self.viewport.size.height).max(px(0.0)));
     }
 
     fn page_bounds(&self) -> Bounds<Pixels> {
-        self.page_layout().get(self.page).copied().unwrap_or_default()
+        self.bounds_for_page(self.page)
+    }
+
+    fn bounds_for_page(&self, page: usize) -> Bounds<Pixels> {
+        self.layout.get(page).map_or_else(Bounds::default, |bounds| {
+            Bounds::new(bounds.origin + self.viewport.origin - self.pan, bounds.size)
+        })
     }
 
     fn page_inset(&self) -> Point<Pixels> {
         self.page_bounds().origin - self.viewport.origin + self.pan
     }
 
-    fn page_layout(&self) -> Vec<Bounds<Pixels>> {
-        let Some(document) = &self.document else { return Vec::new() };
+    fn rebuild_layout(&mut self) {
+        self.layout.clear();
+        let Some(document) = &self.document else { return };
         let width = document.pages().iter().map(|page| page.display_size().0 * self.scale).fold(0.0, f64::max);
         let content_width = px(width as f32 + 24.0).max(self.viewport.size.width);
         let mut top = px(12.0);
-        document
-            .pages()
-            .iter()
-            .map(|page| {
-                let (width, height) = page.display_size();
-                let page_size = size(px((width * self.scale) as f32), px((height * self.scale) as f32));
-                let origin = self.viewport.origin + point((content_width - page_size.width) / 2.0, top) - self.pan;
-                top += page_size.height + px(12.0);
-                Bounds::new(origin, page_size)
-            })
-            .collect()
+        self.layout.extend(document.pages().iter().map(|page| {
+            let (width, height) = page.display_size();
+            let page_size = size(px((width * self.scale) as f32), px((height * self.scale) as f32));
+            let origin = point((content_width - page_size.width) / 2.0, top);
+            top += page_size.height + px(12.0);
+            Bounds::new(origin, page_size)
+        }));
+        self.content_size = size(content_width, top);
     }
 
     fn scroll(&mut self, delta: Point<Pixels>, cx: &mut Context<Self>) {
         self.pan -= delta;
         self.clamp_pan();
-        let center = self.viewport.origin.y + self.viewport.size.height / 2.0;
-        if let Some((page, _)) = self.page_layout().iter().enumerate().min_by(|(_, a), (_, b)| {
+        let center = self.pan.y + self.viewport.size.height / 2.0;
+        let next = self.layout.partition_point(|bounds| bounds.bottom() < center);
+        if let Some(page) = (next.saturating_sub(1)..(next + 1).min(self.layout.len())).min_by(|&a, &b| {
             let distance = |bounds: &Bounds<Pixels>| (bounds.origin.y - center).max(center - bounds.bottom()).max(px(0.0));
-            distance(a).partial_cmp(&distance(b)).unwrap()
+            distance(&self.layout[a]).partial_cmp(&distance(&self.layout[b])).unwrap()
         }) {
             self.page = page;
         }
@@ -404,7 +414,11 @@ impl Preview {
             cx.notify();
             return;
         }
-        let Some((index, bounds)) = self.page_layout().into_iter().enumerate().find(|(_, bounds)| bounds.contains(&position)) else {
+        let Some((index, bounds)) = self
+            .visible_pages()
+            .map(|index| (index, self.bounds_for_page(index)))
+            .find(|(_, bounds)| bounds.contains(&position))
+        else {
             return;
         };
         let page = self.document.as_ref().unwrap().pages()[index];
@@ -557,10 +571,8 @@ impl Render for Preview {
                             },
                             move |bounds, (), window, cx| {
                                 paint_entity.update(cx, |preview, _| {
-                                    for (index, page_bounds) in preview.page_layout().into_iter().enumerate() {
-                                        if page_bounds.bottom() <= bounds.origin.y || page_bounds.origin.y >= bounds.bottom() {
-                                            continue;
-                                        }
+                                    for index in preview.visible_pages() {
+                                        let page_bounds = preview.bounds_for_page(index);
                                         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
                                             window.paint_quad(fill(page_bounds, gpui::white()));
                                         });
@@ -646,6 +658,7 @@ mod tests {
         preview.update(&mut cx, |preview, cx| {
             preview.document = Some(document);
             preview.viewport = Bounds::new(Point::default(), size(px(100.0), px(100.0)));
+            preview.rebuild_layout();
             preview.schedule(cx);
             assert!(preview.render_task.is_some());
             preview.set_zoom(Zoom::Scale(2.0), cx);
@@ -671,11 +684,12 @@ mod tests {
             preview.document = Some(document);
             preview.viewport = Bounds::new(point(px(10.0), px(20.0)), size(px(100.0), px(100.0)));
             preview.zoom = Zoom::Scale(1.0);
-            let pages = preview.page_layout();
+            preview.rebuild_layout();
+            let pages = [preview.bounds_for_page(0), preview.bounds_for_page(1)];
             assert_eq!(pages[1].origin.y - pages[0].bottom(), px(12.0));
             let offset = pages[0].bottom() - preview.viewport.origin.y - px(20.0);
             preview.scroll(point(px(0.0), -offset), cx);
-            assert_eq!(preview.visible_pages(), vec![0, 1]);
+            assert_eq!(preview.visible_pages(), 0..2);
             assert_eq!(preview.page, 1);
         });
         cx.run_until_parked();
@@ -685,14 +699,54 @@ mod tests {
             assert!(preview.images.iter().any(|(key, _)| key.page == 1));
         });
         preview.update(&mut cx, |preview, cx| {
-            let offset = preview.page_layout()[1].origin.y - preview.viewport.origin.y;
+            let offset = preview.bounds_for_page(1).origin.y - preview.viewport.origin.y;
             preview.scroll(point(px(0.0), -offset), cx);
-            assert_eq!(preview.visible_pages(), vec![1]);
+            assert_eq!(preview.visible_pages(), 1..2);
             preview.scroll(point(px(0.0), px(100_000.0)), cx);
             assert_eq!(preview.pan.y, px(0.0));
             assert_eq!(preview.page, 0);
             preview.scroll(point(px(0.0), px(-100_000.0)), cx);
-            assert_eq!(preview.page_layout()[1].bottom(), preview.viewport.bottom() - px(12.0));
+            assert_eq!(preview.bounds_for_page(1).bottom(), preview.viewport.bottom() - px(12.0));
+        });
+    }
+
+    #[test]
+    fn viewport_translation_and_resize_refresh_page_geometry() {
+        let (_directory, pdf) = fixture();
+        let document = Document::load(&pdf).unwrap();
+        let mut cx = TestAppContext::single();
+        let preview = cx.new(Preview::new);
+        preview.update(&mut cx, |preview, cx| {
+            preview.document = Some(document);
+            preview.viewport = Bounds::new(Point::default(), size(px(100.0), px(100.0)));
+            preview.set_zoom(Zoom::Scale(1.0), cx);
+            let before = preview.page_bounds();
+            let visible = preview.visible_pages();
+            preview.viewport.origin = point(px(30.0), px(50.0));
+            assert_eq!(preview.page_bounds().origin, before.origin + preview.viewport.origin);
+            assert_eq!(preview.visible_pages(), visible);
+
+            preview.viewport.size = size(px(1000.0), px(1000.0));
+            preview.update_scale(cx);
+            assert_eq!(preview.pan, Point::default());
+            for index in 0..2 {
+                let bounds = preview.bounds_for_page(index);
+                assert_eq!(bounds.origin.x + bounds.size.width / 2.0, preview.viewport.origin.x + px(500.0));
+            }
+            preview.set_zoom(Zoom::FitWidth, cx);
+            let pages = preview.document.as_ref().unwrap().pages();
+            let expected = pages
+                .iter()
+                .map(|page| Zoom::FitWidth.scale(*page, 976.0, 976.0))
+                .fold(f64::INFINITY, f64::min);
+            assert_eq!(preview.scale, expected);
+            for (index, page) in pages.iter().enumerate() {
+                let (width, height) = page.display_size();
+                assert_eq!(
+                    preview.bounds_for_page(index).size,
+                    size(px((width * expected) as f32), px((height * expected) as f32))
+                );
+            }
         });
     }
 

@@ -130,6 +130,35 @@ fn unterminated_declarations_are_not_recorded_but_unterminated_labels_are_recove
 }
 
 #[test]
+fn many_unclosed_arguments_recover_independently_at_line_boundaries() {
+    let text = "\\label{recovered\n".repeat(10_000);
+    let document = document(&text);
+    assert_eq!(document.labels.len(), 10_000);
+    for label in document.labels {
+        assert_eq!(label.name, "recovered");
+        assert_eq!(&text[label.range], "recovered");
+    }
+}
+
+#[test]
+fn argument_boundaries_ignore_escaped_comment_and_verbatim_braces() {
+    let text = "\\section{Outer \\ref{inner} \\{ % }\n\\verb|}| \\begin{verbatim}}\\end{verbatim} tail}";
+    let document = document(text);
+    assert_eq!(document.headings[0].range, 0..text.len());
+    assert_eq!(names(&document.references), ["inner"]);
+}
+
+#[test]
+fn mismatched_environment_closures_discard_inner_openings() {
+    let document = document("\\begin{outer}\\begin{inner}\\begin{inner}\\end{missing}\\end{outer}\\end{inner}\\begin{inner}\\end{inner}");
+    assert!(document.environments[0].end.is_some());
+    assert!(document.environments[1].end.is_none());
+    assert!(document.environments[2].end.is_none());
+    assert_eq!(document.environments[3].parent, None);
+    assert!(document.environments[3].end.is_some());
+}
+
+#[test]
 fn nested_environments_record_parents_and_matching_end_ranges() {
     let text = "\\begin{document}\\begin{figure*}\\begin{center}x\\end{center}\\end{figure*}\\end{document}";
     let document = document(text);

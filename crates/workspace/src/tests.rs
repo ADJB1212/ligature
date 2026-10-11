@@ -959,6 +959,58 @@ fn inactive_clean_files_reload_and_dirty_files_defer_the_external_change_prompt(
     assert_eq!(text(&cx, &root), "local external");
 }
 
+#[test]
+fn pending_watcher_setup_attaches_to_its_tab_after_switching_documents() {
+    let directory = tempfile::tempdir().unwrap();
+    let first = directory.path().join("first.tex");
+    let second = directory.path().join("second.tex");
+    fs::write(&first, "first").unwrap();
+    fs::write(&second, "second").unwrap();
+    let first = ligature_fs::read(&first).unwrap();
+    let second = ligature_fs::read(&second).unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    cx.update_window(window.into(), |_, window, cx| {
+        root.update(cx, |workspace, cx| {
+            workspace.replace_document(Some(first), window, cx);
+            assert!(workspace.watcher.is_none());
+            workspace.replace_document(Some(second), window, cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    root.read_with(&cx, |workspace, _| {
+        assert_eq!(workspace.tabs.len(), 2);
+        assert!(workspace.watcher.is_some());
+        let first = workspace.tabs[0].as_ref().unwrap();
+        assert!(first.watcher.is_some());
+        assert!(first.watch_task.is_some());
+    });
+}
+
+#[test]
+fn closing_a_document_cancels_pending_watcher_setup() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("closed.tex");
+    fs::write(&path, "closed").unwrap();
+    let loaded = ligature_fs::read(&path).unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    cx.update_window(window.into(), |_, window, cx| {
+        root.update(cx, |workspace, cx| {
+            workspace.replace_document(Some(loaded), window, cx);
+            workspace.close_document(window, cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    root.read_with(&cx, |workspace, _| {
+        assert!(workspace.document.is_none());
+        assert!(workspace.watcher.is_none());
+        assert!(workspace.watch_task.is_none());
+    });
+}
+
 fn show_search(cx: &mut TestAppContext, window: WindowHandle<Workspace>, project: bool) {
     cx.update_window(window.into(), |root, window, cx| {
         root.downcast::<Workspace>()

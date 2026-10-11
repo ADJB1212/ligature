@@ -180,7 +180,7 @@ impl Editor {
     pub fn set_read_only_text(&mut self, text: &str, cx: &mut Context<Self>) {
         assert!(self.read_only);
         if self.state.text() != text {
-            self.state.reload(text.to_owned());
+            self.state.reload_text(text);
             self.preferred_x = None;
             cx.notify();
         }

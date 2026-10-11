@@ -208,7 +208,7 @@ impl IncludeGraph {
 }
 
 pub fn include_paths(text: &str) -> Vec<String> {
-    let buffer = ligature_buffer::Buffer::from_text(text);
+    let buffer = ligature_buffer::Buffer::new();
     let snapshot = ligature_syntax::Snapshot::parse(buffer.id(), buffer.revision(), ligature_syntax::Language::Tex, text.into());
     ligature_tex::parse(&snapshot)
         .includes

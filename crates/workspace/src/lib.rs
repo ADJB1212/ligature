@@ -235,7 +235,7 @@ impl Workspace {
             && matches!(self.editor.read(cx).state().text(), "" | NEW_DOCUMENT)
             && !self.dirty(cx);
         if reuse_starter {
-            self.stop_watching();
+            self.stop_watching(cx);
         } else if self.document.is_some() {
             self.park_active();
             self.active_tab = self.tabs.len();
@@ -271,7 +271,7 @@ impl Workspace {
         if self.document.is_none() {
             return;
         }
-        self.stop_watching();
+        self.stop_watching(cx);
         self.document = None;
         self.tabs.remove(self.active_tab);
         if !self.tabs.is_empty() {
@@ -355,50 +355,79 @@ impl Workspace {
         }
     }
 
-    fn stop_watching(&mut self) {
+    fn stop_watching(&mut self, cx: &mut Context<Self>) {
         self.watch_task = None;
-        self.watcher = None;
+        if let Some(watcher) = self.watcher.take() {
+            cx.background_executor().spawn(async move { drop(watcher) }).detach();
+        }
         self.external_pending = false;
     }
 
     fn start_watching(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.stop_watching();
+        self.stop_watching(cx);
         let Some(document) = &self.document else {
             return;
         };
         let Some(path) = &document.path else {
             return;
         };
-        match FileWatcher::new(path.clone(), document.disk.clone()) {
-            Ok(watcher) => {
-                let events = watcher.events();
-                let editor_id = self.editor.entity_id();
-                self.watcher = Some(watcher);
-                self.watch_task = Some(cx.spawn_in(window, async move |this, cx| {
-                    while let Ok(state) = events.recv().await {
-                        if this
-                            .update_in(cx, |workspace, window, cx| {
-                                if workspace.editor.entity_id() != editor_id {
-                                    workspace.refresh_inactive(editor_id, state.clone(), cx);
-                                    return;
-                                }
-                                if workspace.document.as_ref().is_some_and(|document| document.disk != state) {
-                                    if workspace.busy {
-                                        workspace.external_pending = true;
-                                    } else {
-                                        workspace.start(Intent::CheckExternal, window, cx);
-                                    }
-                                }
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
+        let path = path.clone();
+        let watched_path = path.clone();
+        let initial = document.disk.clone();
+        let editor_id = self.editor.entity_id();
+        self.watch_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { FileWatcher::new(watched_path, initial) })
+                .await;
+            let events = this.update_in(cx, |workspace, _, cx| {
+                let target = if workspace.editor.entity_id() == editor_id
+                    && workspace.document.as_ref().is_some_and(|document| document.path.as_ref() == Some(&path))
+                {
+                    Some(&mut workspace.watcher)
+                } else {
+                    workspace
+                        .tabs
+                        .iter_mut()
+                        .flatten()
+                        .find(|tab| tab.editor.entity_id() == editor_id && tab.document.path.as_ref() == Some(&path))
+                        .map(|tab| &mut tab.watcher)
+                }?;
+                match result {
+                    Ok(watcher) => {
+                        let events = watcher.events();
+                        *target = Some(watcher);
+                        Some(events)
                     }
-                }));
+                    Err(error) => {
+                        workspace.error = Some(format!("Could not watch '{}': {error}", path.display()));
+                        cx.notify();
+                        None
+                    }
+                }
+            });
+            let Ok(Some(events)) = events else { return };
+            while let Ok(state) = events.recv().await {
+                if this
+                    .update_in(cx, |workspace, window, cx| {
+                        if workspace.editor.entity_id() != editor_id {
+                            workspace.refresh_inactive(editor_id, state, cx);
+                            return;
+                        }
+                        if workspace.document.as_ref().is_some_and(|document| document.disk != state) {
+                            if workspace.busy {
+                                workspace.external_pending = true;
+                            } else {
+                                workspace.start(Intent::CheckExternal, window, cx);
+                            }
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
             }
-            Err(error) => self.error = Some(format!("Could not watch '{}': {error}", path.display())),
-        }
+        }));
     }
 
     fn refresh_inactive(&mut self, editor_id: gpui::EntityId, state: FileState, cx: &mut Context<Self>) {

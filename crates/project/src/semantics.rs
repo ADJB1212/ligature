@@ -53,6 +53,12 @@ impl SemanticIndex {
         let mut pending = vec![root.clone()];
         let mut visited = BTreeSet::new();
         let mut bibliography_files = BTreeSet::new();
+        let mut previous_bibliographies: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        for (key, definitions) in &previous.bibliography.entries {
+            for definition in definitions {
+                previous_bibliographies.entry(&definition.path).or_default().push((key, definition));
+            }
+        }
         while let Some(path) = pending.pop() {
             if !visited.insert(path.clone()) {
                 continue;
@@ -67,8 +73,8 @@ impl SemanticIndex {
             let source = if let Some(source) = previous.sources.get(&path).filter(|source| source.text.as_ref() == text) {
                 source.clone()
             } else {
-                let buffer = Buffer::from_text(text);
-                let text: Arc<str> = buffer.text().into();
+                let buffer = Buffer::new();
+                let text: Arc<str> = text.into();
                 let snapshot = Snapshot::parse(buffer.id(), buffer.revision(), Language::Tex, Arc::clone(&text));
                 Source {
                     text,
@@ -93,17 +99,15 @@ impl SemanticIndex {
         for path in bibliography_files {
             match read(&path) {
                 Ok(text) => {
-                    if previous.bibliography_sources.get(&path).is_some_and(|old| old.as_ref() == text) {
-                        for (key, definitions) in &previous.bibliography.entries {
-                            let definitions = definitions.iter().filter(|definition| definition.path == path);
-                            for definition in definitions {
-                                index.bibliography.entries.entry(key.clone()).or_default().push(definition.clone());
-                            }
+                    let unchanged = previous.bibliography_sources.get(&path).filter(|old| old.as_ref() == text);
+                    if unchanged.is_some() {
+                        for &(key, definition) in previous_bibliographies.get(&path).into_iter().flatten() {
+                            index.bibliography.entries.entry(key.clone()).or_default().push(definition.clone());
                         }
                     } else {
                         index.bibliography.insert(path.clone(), &ligature_bibliography::parse(&text));
                     }
-                    index.bibliography_sources.insert(path, text.into());
+                    index.bibliography_sources.insert(path, unchanged.cloned().unwrap_or_else(|| text.into()));
                 }
                 Err(error) => {
                     index.errors.insert(path, error);
@@ -288,6 +292,20 @@ mod tests {
         assert_eq!(refreshed.unresolved_references.len(), 2);
         assert_eq!(refreshed.errors.len(), 1);
         assert!(Arc::ptr_eq(&initial.sources[root].text, &refreshed.sources[root].text));
+    }
+
+    #[test]
+    fn unchanged_bibliographies_preserve_duplicate_order_and_share_source_text() {
+        let files = files();
+        let root = Path::new("/project/main.tex");
+        let initial = SemanticIndex::load_with(root, |path| files.get(path).cloned().ok_or_else(|| "missing".into()));
+        let refreshed = SemanticIndex::refresh_with(root, &initial, |path| files.get(path).cloned().ok_or_else(|| "missing".into()));
+        assert_eq!(initial, refreshed);
+        for (path, text) in &initial.bibliography_sources {
+            assert!(Arc::ptr_eq(text, &refreshed.bibliography_sources[path]));
+        }
+        assert_eq!(refreshed.bibliography.resolve("book")[0].entry.title(), Some("One"));
+        assert_eq!(refreshed.bibliography.resolve("book")[1].entry.title(), Some("Two"));
     }
 
     #[test]

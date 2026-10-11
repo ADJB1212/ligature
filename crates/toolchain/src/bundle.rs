@@ -37,7 +37,7 @@ impl LocalBundle {
     }
 
     pub fn contains(&self, name: &str) -> bool {
-        self.archive.file_names().any(|entry| entry.is_ok_and(|entry| entry == name))
+        self.archive.index_for_name(name).is_some()
     }
 
     pub fn names(&self) -> Result<Vec<String>, String> {

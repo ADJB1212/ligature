@@ -2,7 +2,7 @@
 
 use ligature_project::Project;
 use ligature_settings::{BuildSettings, SaveBeforeBuild};
-use ligature_toolchain::{BundledResources, ENGINE_VERSION};
+use ligature_toolchain::{BundledResources, ENGINE_VERSION, LocalBundle};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -132,12 +132,13 @@ impl BuildRequest {
         let mut project = Project::open(&self.project_root)?;
         project.set_root_document(&self.root_document)?;
         validate_output(&project.root, &self.output_directory)?;
-        resources.validate()?;
+        let bundle = resources.validate()?;
         resources.prepare_cache()?;
         std::fs::create_dir_all(&self.output_directory).map_err(|error| format!("Could not create build output directory: {error}"))?;
         Ok(BuildSession {
             command: self.command(resources),
             resources: resources.clone(),
+            bundle,
             output_directory: self.output_directory.clone(),
         })
     }
@@ -176,13 +177,14 @@ impl BuildRequest {
 pub struct BuildSession {
     command: Command,
     resources: BundledResources,
+    bundle: LocalBundle,
     output_directory: PathBuf,
 }
 
 impl BuildSession {
     pub fn run(&mut self) -> Result<Output, String> {
         let _lease = execution::OutputLease::acquire(&self.output_directory)?;
-        self.resources.validate()?;
+        self.bundle = self.resources.validate()?;
         let version = Command::new(&self.resources.executable)
             .arg("--version")
             .output()
@@ -199,7 +201,7 @@ impl BuildSession {
         if !output.status.success() {
             let diagnostics = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
             if let Some(name) = missing_package(&diagnostics)
-                && !self.resources.validate()?.contains(&name)
+                && !self.bundle.contains(&name)
             {
                 return Err(format!(
                     "Unsupported project package or document class '{name}': it is not included in the shipped TeX bundle. Add compatible project-local files or use a supported package.\n{diagnostics}"

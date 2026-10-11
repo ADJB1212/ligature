@@ -86,9 +86,13 @@ impl EditorState {
     }
 
     pub fn reload(&mut self, text: String) {
+        self.reload_text(&text);
+    }
+
+    pub(crate) fn reload_text(&mut self, text: &str) {
         let anchor = self.anchor;
         let caret = self.caret;
-        self.buffer.reload(&text);
+        self.buffer.reload(text);
         self.composition = None;
         self.line_ending = if text.contains("\r\n") { LineEnding::CrLf } else { LineEnding::Lf };
         self.select(anchor, caret);
@@ -317,9 +321,18 @@ impl EditorState {
 
     pub fn mark(&mut self, range: Option<Range<usize>>, text: &str, selected: Option<Range<usize>>) {
         let range = range.or_else(|| self.marked_range()).unwrap_or_else(|| self.selection());
-        let mut display = self.text().to_owned();
+        let mut display = if let Some(composition) = &mut self.composition {
+            std::mem::take(&mut composition.display)
+        } else {
+            self.buffer.text().to_owned()
+        };
         display.replace_range(range.clone(), text);
-        let mut line_starts = vec![0];
+        let mut line_starts = self
+            .composition
+            .as_mut()
+            .map_or_else(Vec::new, |composition| std::mem::take(&mut composition.line_starts));
+        line_starts.clear();
+        line_starts.push(0);
         line_starts.extend(
             display
                 .bytes()

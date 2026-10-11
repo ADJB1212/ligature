@@ -145,17 +145,39 @@ impl Mapping {
             sources.entry(Arc::clone(&record.path)).or_default().push(index);
             pages.entry(record.pdf.page).or_default().push(index);
         }
+        for indices in sources.values_mut() {
+            indices.sort_by_key(|&index| records[index].line);
+        }
         Ok(Self { records, sources, pages })
     }
 
     pub fn forward(&self, source: &SourcePosition) -> Option<PdfPosition> {
-        let path = std::fs::canonicalize(&source.path).unwrap_or_else(|_| source.path.clone());
-        self.sources
-            .get(&path)?
+        let indices = self.sources.get(&source.path).or_else(|| {
+            let path = std::fs::canonicalize(&source.path).ok()?;
+            self.sources.get(&path)
+        })?;
+        let next = indices.partition_point(|&index| self.records[index].line < source.line);
+        let distance = indices
+            .get(next)
+            .into_iter()
+            .chain(next.checked_sub(1).and_then(|previous| indices.get(previous)))
+            .map(|&index| self.records[index].line.abs_diff(source.line))
+            .min()?;
+        let first = indices.partition_point(|&index| self.records[index].line < source.line.saturating_sub(distance));
+        let end = indices.partition_point(|&index| self.records[index].line <= source.line.saturating_add(distance));
+        indices[first..end]
             .iter()
-            .map(|&index| &self.records[index])
-            .min_by_key(|record| (record.line.abs_diff(source.line), record.container, record.column.abs_diff(source.column)))
-            .map(|record| record.pdf)
+            .copied()
+            .min_by_key(|&index| {
+                let record = &self.records[index];
+                (
+                    record.line.abs_diff(source.line),
+                    record.container,
+                    record.column.abs_diff(source.column),
+                    index,
+                )
+            })
+            .map(|index| self.records[index].pdf)
     }
 
     pub fn inverse(&self, point: PdfPosition) -> Option<SourcePosition> {
@@ -193,6 +215,31 @@ mod tests {
     use super::*;
 
     const DATA: &str = "SyncTeX Version:1\nInput:1:main.tex\nInput:2:chapters/with spaces.tex\nOutput:pdf\nMagnification:1000\nUnit:1\nX Offset:0\nY Offset:0\nContent:\n{1\nx1,3:65536,131072\nx2,12:196608,262144\n}1\nPostamble:\nCount:2\nPost scriptum:\n";
+
+    #[test]
+    fn forward_lookup_preserves_nearest_line_content_column_and_record_order() {
+        let data = DATA.replace(
+            "}1\n",
+            "x1,7,8:196608,262144\n[1,5,2:327680,393216\nx1,5,9:458752,524288\nx1,3,4:589824,655360\nx1,5,1:720896,786432\n}1\n",
+        );
+        let mapping = Mapping::parse(&data, Path::new("/project"), 1).unwrap();
+        for line in [0, 1, 3, 4, 5, 6, 7, 8, usize::MAX] {
+            for column in [0, 1, 2, 4, 8, 9, usize::MAX] {
+                let source = SourcePosition {
+                    path: "/project/main.tex".into(),
+                    line,
+                    column,
+                };
+                let expected = mapping
+                    .records
+                    .iter()
+                    .filter(|record| record.path.as_ref() == &source.path)
+                    .min_by_key(|record| (record.line.abs_diff(line), record.container, record.column.abs_diff(column)))
+                    .map(|record| record.pdf);
+                assert_eq!(mapping.forward(&source), expected, "line {line}, column {column}");
+            }
+        }
+    }
 
     #[test]
     fn indexed_lookups_preserve_record_order_and_page_isolation() {
