@@ -5,7 +5,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ligature_fs::{FileState, FileWatcher, read, write_atomic, write_atomic_checked};
+use ligature_fs::{FileState, FileWatcher, read, write_atomic, write_atomic_bytes, write_atomic_checked};
+
+#[test]
+fn atomic_binary_writes_preserve_bytes_and_replace_existing_files() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("export.pdf");
+    let bytes = b"%PDF-1.7\n\0\xff\xfe\n%%EOF\n";
+    write_atomic_bytes(&path, bytes).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    write_atomic_bytes(&path, b"replacement\0\x80").unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"replacement\0\x80");
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+}
 
 #[test]
 fn utf8_lf_crlf_and_bom_round_trip_without_conversion() {

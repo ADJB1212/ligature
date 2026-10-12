@@ -27,6 +27,7 @@ pub(super) enum Intent {
     Restore,
     Save,
     SaveAs,
+    ExportPdf,
     Build,
     Close,
     CloseTab(usize),
@@ -47,7 +48,7 @@ impl Workspace {
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let mut result = perform(&this, cx, intent.clone()).await;
-            if result.is_ok() && !matches!(intent, Intent::Quit | Intent::CloseWindow | Intent::Restore) {
+            if result.is_ok() && !matches!(intent, Intent::Quit | Intent::CloseWindow | Intent::Restore | Intent::ExportPdf) {
                 result = super::session::save_session(&this, cx).await;
             }
             this.update_in(cx, |workspace, window, cx| {
@@ -261,6 +262,7 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
         Intent::SelectRoot => super::project::select_root(this, cx).await?,
         Intent::Restore => super::session::restore(this, cx).await?,
         Intent::Build => super::builds::prepare(this, cx).await?,
+        Intent::ExportPdf => super::export::export_pdf(this, cx).await?,
     }
     Ok(())
 }

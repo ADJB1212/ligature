@@ -81,6 +81,10 @@ impl Document {
         &self.pages
     }
 
+    pub fn bytes(&self) -> Arc<[u8]> {
+        Arc::clone(&self.bytes)
+    }
+
     pub fn render(&self, page: usize, scale: f64) -> Result<Raster, String> {
         let metadata = self.pages.get(page).ok_or("PDF page is out of range")?;
         let (width, height) = metadata.raster_size(scale)?;

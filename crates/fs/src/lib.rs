@@ -93,6 +93,14 @@ pub fn write_atomic(path: &Path, text: &str) -> Result<PathBuf, FileError> {
 }
 
 pub fn write_atomic_checked(path: &Path, text: &str, expected: Option<&FileState>) -> Result<PathBuf, FileError> {
+    write_atomic_bytes_checked(path, text.as_bytes(), expected)
+}
+
+pub fn write_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<PathBuf, FileError> {
+    write_atomic_bytes_checked(path, bytes, None)
+}
+
+fn write_atomic_bytes_checked(path: &Path, bytes: &[u8], expected: Option<&FileState>) -> Result<PathBuf, FileError> {
     let path = resolve(path)?;
     let permissions = match fs::metadata(&path) {
         Ok(metadata) if metadata.is_file() => {
@@ -110,7 +118,7 @@ pub fn write_atomic_checked(path: &Path, text: &str, expected: Option<&FileState
         .prefix(".ligature-")
         .tempfile_in(parent)
         .map_err(|err| error(&path, "create a temporary file for", err))?;
-    temporary.write_all(text.as_bytes()).map_err(|err| error(&path, "write", err))?;
+    temporary.write_all(bytes).map_err(|err| error(&path, "write", err))?;
     if let Some(permissions) = permissions {
         temporary
             .as_file()

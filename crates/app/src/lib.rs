@@ -3,8 +3,8 @@
 use gpui::{App, Bounds, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOptions, prelude::*, px, size};
 use ligature_core::APP_NAME;
 use ligature_workspace::{
-    Build, CancelBuild, Close, Find, FindInProject, FindNext, FindPrevious, FitPage, FitWidth, GoToDefinition, New, NextTab, Open, OpenProject,
-    PreviousTab, Quit, Replace, RestartLanguageServer, Save, SaveAs, SelectRoot, ShowInPreview, ToggleBuildOutput, ToggleLanguageServer,
+    Build, CancelBuild, Close, ExportPdf, Find, FindInProject, FindNext, FindPrevious, FitPage, FitWidth, GoToDefinition, New, NextTab, Open,
+    OpenProject, PreviousTab, Quit, Replace, RestartLanguageServer, Save, SaveAs, SelectRoot, ShowInPreview, ToggleBuildOutput, ToggleLanguageServer,
     ToggleOutline, ToggleProject, ToggleTexResources, Workspace, ZoomIn, ZoomOut,
 };
 
@@ -34,6 +34,7 @@ pub fn run() {
                 MenuItem::separator(),
                 MenuItem::action("Save", Save),
                 MenuItem::action("Save As...", SaveAs),
+                MenuItem::action("Export PDF...", ExportPdf),
                 MenuItem::separator(),
                 MenuItem::action("Close", Close),
             ]),

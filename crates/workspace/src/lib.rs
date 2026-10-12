@@ -1,6 +1,7 @@
 //! Top-level window views, document lifecycle, pane layout, and feature coordination.
 
 mod builds;
+mod export;
 mod language;
 mod lifecycle;
 mod project;
@@ -40,6 +41,7 @@ actions!(
         OpenProject,
         Save,
         SaveAs,
+        ExportPdf,
         Close,
         Quit,
         NextTab,
@@ -72,6 +74,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(&format!("{modifier}-o"), Open, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-s"), Save, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-shift-s"), SaveAs, Some("LigatureWorkspace")),
+        KeyBinding::new(&format!("{modifier}-shift-e"), ExportPdf, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-w"), Close, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-q"), Quit, None),
         KeyBinding::new(&format!("{modifier}-shift-o"), OpenProject, Some("LigatureWorkspace")),
@@ -126,6 +129,7 @@ pub struct Workspace {
     pane_ratio: f32,
     preview: Entity<ligature_preview::Preview>,
     _preview_subscription: Subscription,
+    _preview_observation: Subscription,
     document: Option<Document>,
     busy: bool,
     external_pending: bool,
@@ -178,6 +182,14 @@ impl Workspace {
                 workspace.start(Intent::OpenSource(event.0.clone()), window, cx);
             },
         );
+        let mut export_available = false;
+        let preview_observation = cx.observe(&preview, move |_, preview, cx| {
+            let available = preview.read(cx).pdf_snapshot().is_some();
+            if available != export_available {
+                export_available = available;
+                cx.notify();
+            }
+        });
         let subscription = cx.observe(&editor, |workspace, _, cx| workspace.editor_changed(cx));
         let search = search::SearchUi::new(cx);
         let entity = cx.weak_entity();
@@ -191,6 +203,7 @@ impl Workspace {
             pane_ratio: 0.5,
             preview,
             _preview_subscription: preview_subscription,
+            _preview_observation: preview_observation,
             document: Some(Document::untitled()),
             busy: false,
             external_pending: false,
@@ -502,6 +515,9 @@ impl Render for Workspace {
                     .on_action(cx.listener(|this, _: &Close, window, cx| this.start(Intent::Close, window, cx)))
             })
             .on_action(cx.listener(|this, _: &Quit, window, cx| this.request_quit(window, cx)))
+            .when(!self.busy && self.preview.read(cx).pdf_snapshot().is_some(), |view| {
+                view.on_action(cx.listener(|this, _: &ExportPdf, window, cx| this.start(Intent::ExportPdf, window, cx)))
+            })
             .when(!self.busy && self.can_build() && !self.build_ui.running(), |view| {
                 view.on_action(cx.listener(|this, _: &Build, window, cx| this.start_build(window, cx)))
             })

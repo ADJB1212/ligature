@@ -28,6 +28,7 @@ pub struct InverseNavigation(pub SourcePosition);
 pub struct Preview {
     focus: FocusHandle,
     document: Option<Document>,
+    pdf_path: Option<PathBuf>,
     mapping: Option<Mapping>,
     mapping_error: Option<String>,
     generation: u64,
@@ -58,6 +59,7 @@ impl Preview {
         Self {
             focus: cx.focus_handle().tab_stop(true),
             document: None,
+            pdf_path: None,
             mapping: None,
             mapping_error: None,
             generation: 0,
@@ -87,6 +89,7 @@ impl Preview {
         self.load_generation += 1;
         self.load_task = None;
         self.document = None;
+        self.pdf_path = None;
         self.layout.clear();
         self.content_size = Size::default();
         self.page = 0;
@@ -110,11 +113,16 @@ impl Preview {
         }
     }
 
+    pub fn pdf_snapshot(&self) -> Option<(&std::path::Path, &Document)> {
+        self.pdf_path.as_deref().zip(self.document.as_ref())
+    }
+
     /// Load only artifacts from one successful build directory.
     pub fn load(&mut self, pdf: PathBuf, sidecar: Option<PathBuf>, source_directory: PathBuf, cx: &mut Context<Self>) {
         self.load_generation += 1;
         let generation = self.load_generation;
         self.load_task = Some(cx.spawn(async move |this, cx| {
+            let pdf_path = pdf.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
@@ -153,6 +161,7 @@ impl Preview {
                         preview.generation += 1;
                         preview.page = preview.page.min(document.pages().len() - 1);
                         preview.document = Some(document);
+                        preview.pdf_path = Some(pdf_path);
                         preview.mapping_error = mapping.as_ref().err().cloned();
                         preview.mapping = mapping.ok();
                         preview.cache.clear();

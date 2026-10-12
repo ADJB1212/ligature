@@ -26,6 +26,119 @@ fn workspace_with_template(cx: &mut TestAppContext) -> (WindowHandle<Workspace>,
     (window, root)
 }
 
+#[cfg(target_os = "macos")]
+fn load_export_preview(cx: &mut TestAppContext, root: &Entity<Workspace>, path: &Path) {
+    root.update(cx, |workspace, cx| {
+        workspace.preview.update(cx, |preview, cx| {
+            preview.load(path.to_owned(), None, path.parent().unwrap().to_owned(), cx)
+        });
+    });
+    cx.run_until_parked();
+    assert!(root.read_with(cx, |workspace, cx| workspace.preview.read(cx).pdf_snapshot().is_some()));
+}
+
+#[test]
+fn export_shortcut_is_unavailable_without_a_pdf() {
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    cx.simulate_keystrokes(window.into(), "cmd-shift-e");
+    cx.run_until_parked();
+    assert!(!cx.did_prompt_for_new_path());
+    assert!(!root.read_with(&cx, |workspace, _| workspace.busy));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn pdf_export_keeps_the_selected_snapshot_and_untitled_buffer_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("Untitled.pdf");
+    let destination = directory.path().join("export.pdf");
+    let bytes = include_bytes!("../../pdf/tests/fixtures/pages.pdf");
+    fs::write(&source, bytes).unwrap();
+    fs::write(&destination, "previous export").unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    type_text(&mut cx, &root, "unsaved source");
+    let identity = root.read_with(&cx, |workspace, cx| workspace.editor.read(cx).state().buffer().id());
+    load_export_preview(&mut cx, &root, &source);
+    root.update(&mut cx, |workspace, cx| {
+        workspace.preview.update(cx, |preview, cx| preview.set_stale(true, cx));
+    });
+    cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx)).unwrap();
+    cx.simulate_keystrokes(window.into(), "cmd-shift-e");
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_new_path());
+    let mut replacement = bytes.to_vec();
+    replacement.extend_from_slice(b"\n% replacement build\n");
+    fs::write(&source, &replacement).unwrap();
+    load_export_preview(&mut cx, &root, &source);
+    cx.simulate_new_path_selection(|_| Some(destination.clone()));
+    cx.run_until_parked();
+    assert_eq!(fs::read(&destination).unwrap(), bytes);
+    root.read_with(&cx, |workspace, cx| {
+        assert_eq!(workspace.editor.read(cx).state().buffer().id(), identity);
+        assert_eq!(workspace.editor.read(cx).state().text(), "unsaved source");
+        assert!(workspace.dirty(cx));
+        assert!(workspace.document.as_ref().unwrap().path.is_none());
+        assert!(workspace.project.is_none());
+        assert!(workspace.error.is_none());
+        assert!(!workspace.busy);
+        assert_eq!(workspace.preview.read(cx).pdf_snapshot().unwrap().1.bytes().as_ref(), replacement);
+    });
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn canceled_pdf_export_leaves_existing_files_unchanged() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("main.pdf");
+    fs::write(&source, include_bytes!("../../pdf/tests/fixtures/pages.pdf")).unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    load_export_preview(&mut cx, &root, &source);
+    start(&mut cx, window, Intent::ExportPdf);
+    assert!(cx.did_prompt_for_new_path());
+    cx.simulate_new_path_selection(|_| None);
+    cx.run_until_parked();
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    root.read_with(&cx, |workspace, _| {
+        assert!(workspace.error.is_none());
+        assert!(!workspace.busy);
+    });
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn failed_pdf_export_reports_the_destination_and_allows_retry() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("main.pdf");
+    let destination = directory.path().join("readonly.pdf");
+    fs::write(&source, include_bytes!("../../pdf/tests/fixtures/pages.pdf")).unwrap();
+    fs::write(&destination, "original").unwrap();
+    let mut permissions = fs::metadata(&destination).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&destination, permissions).unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    load_export_preview(&mut cx, &root, &source);
+    start(&mut cx, window, Intent::ExportPdf);
+    cx.simulate_new_path_selection(|_| Some(destination.clone()));
+    cx.run_until_parked();
+    assert_eq!(fs::read_to_string(&destination).unwrap(), "original");
+    root.read_with(&cx, |workspace, _| {
+        let error = workspace.error.as_ref().unwrap();
+        assert!(error.contains("readonly.pdf"));
+        assert!(error.contains("read-only"));
+        assert!(!workspace.busy);
+    });
+    let retry = directory.path().join("retry.pdf");
+    start(&mut cx, window, Intent::ExportPdf);
+    cx.simulate_new_path_selection(|_| Some(retry.clone()));
+    cx.run_until_parked();
+    assert_eq!(fs::read(&retry).unwrap(), include_bytes!("../../pdf/tests/fixtures/pages.pdf"));
+    assert!(root.read_with(&cx, |workspace, _| workspace.error.is_none()));
+}
+
 #[test]
 fn outline_navigation_preserves_untitled_identity_and_dirty_state() {
     let mut cx = TestAppContext::single();
