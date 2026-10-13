@@ -35,6 +35,17 @@ pub fn chrome_strip() -> gpui::Div {
     div().flex_shrink_0().px(spacing::large()).py(spacing::medium()).bg(colors().chrome)
 }
 
+pub fn panel_header(text: impl Into<gpui::SharedString>) -> gpui::Div {
+    chrome_strip()
+        .h(px(40.0))
+        .flex()
+        .items_center()
+        .border_b_1()
+        .border_color(colors().border)
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .child(div().flex_1().min_w(px(0.0)).overflow_hidden().text_ellipsis().child(text.into()))
+}
+
 pub fn hairline() -> impl IntoElement {
     div().h(gpui::px(1.0)).w_full().flex_shrink_0().bg(colors().border)
 }

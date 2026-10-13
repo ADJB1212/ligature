@@ -8,7 +8,7 @@ use gpui::{AsyncWindowContext, Context, IntoElement, PathPromptOptions, WeakEnti
 use ligature_project::{IncludeGraph, Project};
 use ligature_settings::{PROJECT_FILE, Settings};
 use ligature_theme::{colors, spacing};
-use ligature_ui::{Button, caption, inline_error};
+use ligature_ui::{Button, caption, inline_error, panel_header};
 
 use crate::{Workspace, lifecycle::Intent};
 
@@ -273,20 +273,24 @@ impl Workspace {
         self.tree_rows(&project.root, 0, &mut rows);
         let colors = colors();
         let active_path = self.document.as_ref().and_then(|document| document.path.as_ref());
-        div()
-            .id("project-tree")
-            .w(px(220.0))
-            .h_full()
-            .flex_shrink_0()
+        let content = div()
+            .id("project-files")
+            .flex_1()
+            .min_h(px(0.0))
+            .min_w(px(0.0))
             .overflow_y_scroll()
             .px(spacing::medium())
-            .py(spacing::large())
-            .bg(colors.background)
-            .child(caption("Files"))
+            .py(spacing::medium())
             .when_some(project.root_document.as_ref(), |view, path| {
-                view.child(caption(format!("Root: {}", path.file_name().unwrap_or_default().to_string_lossy())))
+                view.child(
+                    div()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .mb(spacing::medium())
+                        .child(caption(format!("Main: {}", path.file_name().unwrap_or_default().to_string_lossy()))),
+                )
             })
-            .child(div().h(spacing::medium()))
+            .when(rows.is_empty(), |view| view.child(caption("No files in this project.")))
             .children(rows.into_iter().enumerate().map(|(index, (path, depth, directory, error))| {
                 if let Some(error) = error {
                     return div().pl(px(depth as f32 * 12.0)).child(inline_error(error));
@@ -295,33 +299,48 @@ impl Workspace {
                 let selected = active_path == Some(&path);
                 let label = format!(
                     "{}{}",
-                    if directory { if expanded { "- " } else { "+ " } } else { "" },
+                    if directory { if expanded { "▾ " } else { "▸ " } } else { "" },
                     path.file_name().unwrap_or_default().to_string_lossy()
                 );
-                div().pl(px(depth as f32 * 12.0)).child(
-                    Button::new(("tree-entry", index), label)
-                        .quiet()
-                        .selected(selected)
-                        .disabled(self.busy)
-                        .on_click(cx.listener(move |workspace, _, window, cx| {
-                            if directory {
-                                if !workspace.expanded.remove(&path) {
-                                    workspace.expanded.insert(path.clone());
+                div()
+                    .debug_selector(move || format!("project-entry-{index}"))
+                    .min_w(px(0.0))
+                    .pl(px(depth.min(8) as f32 * 12.0))
+                    .child(
+                        Button::new(("tree-entry", index), label)
+                            .quiet()
+                            .full_width()
+                            .tooltip(path.strip_prefix(&project.root).unwrap_or(&path).display().to_string())
+                            .selected(selected)
+                            .disabled(self.busy)
+                            .on_click(cx.listener(move |workspace, _, window, cx| {
+                                if directory {
+                                    if !workspace.expanded.remove(&path) {
+                                        workspace.expanded.insert(path.clone());
+                                    }
+                                    workspace.start_project_refresh(window, cx);
+                                    cx.notify();
+                                } else {
+                                    workspace.start(Intent::OpenPath(path.clone()), window, cx);
                                 }
-                                workspace.start_project_refresh(window, cx);
-                                cx.notify();
-                            } else {
-                                workspace.start(Intent::OpenPath(path.clone()), window, cx);
-                            }
-                        })),
-                )
+                            })),
+                    )
             }))
             .children(
                 self.includes
                     .errors
                     .iter()
                     .map(|(path, error)| inline_error(format!("Include '{}': {error}", path.display()))),
-            )
+            );
+        div()
+            .id("project-tree")
+            .debug_selector(|| "project-tree".into())
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(colors.chrome)
+            .child(panel_header("Files"))
+            .child(content)
     }
 
     fn tree_rows(&self, path: &Path, depth: usize, rows: &mut Vec<(PathBuf, usize, bool, Option<String>)>) {

@@ -383,6 +383,152 @@ fn compact_chrome_keeps_editor_and_preview_headers_aligned_at_minimum_window_siz
 }
 
 #[test]
+fn files_and_outline_share_a_sidebar_without_clipping_either_working_pane() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("a-very-long-document-name-that-should-fit-inside-a-tab.tex");
+    fs::write(&path, "\\section{A heading that is wider than the sidebar}").unwrap();
+    let mut app = TestAppContext::single();
+    let (window, root) = workspace(&mut app);
+    open_project(&mut app, window, directory.path());
+    open(&mut app, window, &path);
+    root.update(&mut app, |workspace, cx| {
+        workspace.semantic_ui.visible = true;
+        cx.notify();
+    });
+    let mut cx = gpui::VisualTestContext::from_window(window.into(), &app);
+    cx.simulate_resize(gpui::size(px(640.0), px(480.0)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let sidebar = cx.debug_bounds("workspace-sidebar").unwrap();
+    let files = cx.debug_bounds("project-tree").unwrap();
+    let outline = cx.debug_bounds("document-outline").unwrap();
+    let source = cx.debug_bounds("leading-pane").unwrap();
+    let preview = cx.debug_bounds("trailing-pane").unwrap();
+    let tab = cx.debug_bounds("document-tab-0").unwrap();
+    let status = cx.debug_bounds("workspace-status").unwrap();
+    assert_eq!(sidebar.size.width, px(200.0));
+    assert_eq!(files.left(), outline.left());
+    assert_eq!(files.size.width, outline.size.width);
+    assert!(files.bottom() <= outline.top());
+    assert!(outline.bottom() <= sidebar.bottom());
+    assert!(source.size.width >= px(200.0));
+    assert!(preview.size.width >= px(200.0));
+    assert!(source.right() <= preview.left());
+    assert!(preview.right() <= px(640.0));
+    assert!(tab.size.width <= px(200.0));
+    assert!(tab.right() <= source.right());
+    assert_eq!(status.size.height, px(28.0));
+    assert_eq!(status.bottom(), px(480.0));
+}
+
+#[test]
+fn sidebar_file_rows_open_documents_when_clicked_at_the_right_edge() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("main.tex");
+    fs::write(&path, "project source").unwrap();
+    let mut app = TestAppContext::single();
+    let (window, root) = workspace(&mut app);
+    open_project(&mut app, window, directory.path());
+    let mut cx = gpui::VisualTestContext::from_window(window.into(), &app);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let entry = cx.debug_bounds("project-entry-0").unwrap();
+    cx.simulate_click(gpui::point(entry.right() - px(8.0), entry.center().y), Default::default());
+    cx.run_until_parked();
+    root.read_with(&cx, |workspace, cx| {
+        assert_eq!(
+            workspace.document.as_ref().unwrap().path.as_ref().unwrap(),
+            &fs::canonicalize(path).unwrap()
+        );
+        assert_eq!(workspace.editor.read(cx).state().text(), "project source");
+    });
+}
+
+#[test]
+fn build_status_control_toggles_output_and_preserves_editor_focus() {
+    let mut app = TestAppContext::single();
+    let (window, root) = workspace(&mut app);
+    type_text(&mut app, &root, "unsaved source");
+    let identity = root.read_with(&app, |workspace, cx| workspace.editor.read(cx).state().buffer().id());
+    let mut cx = gpui::VisualTestContext::from_window(window.into(), &app);
+    for visible in [true, false] {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let control = cx.debug_bounds("build-status-control").unwrap();
+        cx.simulate_click(control.center(), Default::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let workspace = root.read(cx);
+            assert_eq!(workspace.build_ui.visible, visible);
+            assert!(workspace.editor.focus_handle(cx).is_focused(window));
+            assert_eq!(workspace.editor.read(cx).state().buffer().id(), identity);
+            assert_eq!(workspace.editor.read(cx).state().text(), "unsaved source");
+            assert!(workspace.dirty(cx));
+        });
+    }
+}
+
+#[test]
+fn empty_workspace_new_action_creates_and_focuses_a_document() {
+    let mut app = TestAppContext::single();
+    let (window, root) = workspace(&mut app);
+    start(&mut app, window, Intent::Close);
+    assert!(root.read_with(&app, |workspace, _| workspace.document.is_none()));
+    let mut cx = gpui::VisualTestContext::from_window(window.into(), &app);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let control = cx.debug_bounds("empty-new-action").unwrap();
+    cx.simulate_click(control.center(), Default::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        let workspace = root.read(cx);
+        assert!(workspace.document.as_ref().unwrap().path.is_none());
+        assert_eq!(workspace.editor.read(cx).state().text(), NEW_DOCUMENT);
+        assert!(workspace.editor.focus_handle(cx).is_focused(window));
+        assert!(!workspace.dirty(cx));
+    });
+}
+
+#[test]
+fn document_status_follows_saving_and_subsequent_edits() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("main.tex");
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    assert_eq!(root.read_with(&cx, |workspace, cx| workspace.document_status(cx)), "Unsaved document");
+    type_text(&mut cx, &root, "source");
+    start(&mut cx, window, Intent::Save);
+    cx.simulate_new_path_selection(|_| Some(path));
+    cx.run_until_parked();
+    assert_eq!(root.read_with(&cx, |workspace, cx| workspace.document_status(cx)), "Saved");
+    type_text(&mut cx, &root, " edit");
+    assert_eq!(root.read_with(&cx, |workspace, cx| workspace.document_status(cx)), "Unsaved changes");
+    root.update(&mut cx, |workspace, cx| {
+        workspace.external_pending = true;
+        assert_eq!(workspace.document_status(cx), "Changed on disk");
+    });
+}
+
+#[test]
+fn caret_status_counts_unicode_characters_and_tracks_uncommitted_composition() {
+    let mut cx = TestAppContext::single();
+    let (_, root) = workspace(&mut cx);
+    type_text(&mut cx, &root, "é😀\r\n漢字");
+    assert_eq!(root.read_with(&cx, |workspace, cx| workspace.caret_status(cx)), "Ln 2, Col 3");
+    root.update(&mut cx, |workspace, cx| {
+        workspace
+            .editor
+            .update(cx, |editor, cx| editor.update_state(|state| state.select(2, 2), cx));
+        assert_eq!(workspace.caret_status(cx), "Ln 1, Col 2");
+        workspace
+            .editor
+            .update(cx, |editor, cx| editor.update_state(|state| state.mark(None, "あ\n文", None), cx));
+        assert_eq!(workspace.caret_status(cx), "Ln 2, Col 2");
+        assert_eq!(workspace.editor.read(cx).state().buffer().text(), "é😀\r\n漢字");
+        workspace
+            .editor
+            .update(cx, |editor, cx| editor.update_state(|state| state.cancel_composition(), cx));
+        assert_eq!(workspace.caret_status(cx), "Ln 1, Col 2");
+    });
+}
+
+#[test]
 fn panel_menu_actions_work_from_editor_focus_and_preserve_the_document() {
     let directory = tempfile::tempdir().unwrap();
     let mut cx = TestAppContext::single();

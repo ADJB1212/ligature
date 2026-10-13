@@ -3,7 +3,7 @@ use gpui::{App, AsyncWindowContext, Context, IntoElement, Task, WeakEntity, Wind
 use ligature_buffer::DocumentId;
 use ligature_build::{BuildArtifacts, BuildJob, BuildPreparation, BuildRequest, BuildSnapshot, BuildState, TemporarySource, TextBuild};
 use ligature_diagnostics::{Diagnostic, Severity, grouped};
-use ligature_theme::spacing;
+use ligature_theme::{colors, spacing};
 use ligature_toolchain::BundledResources;
 use ligature_ui::{Button, Indicator, caption, chrome_strip, indicator, inline_error};
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Duration};
@@ -26,6 +26,33 @@ pub(super) struct BuildUi {
 }
 
 impl BuildUi {
+    fn status(&self) -> (&'static str, Indicator) {
+        if self.running() {
+            return ("Building...", Indicator::Live);
+        }
+        match self.snapshot.state {
+            BuildState::Idle => ("No build yet", Indicator::Idle),
+            BuildState::Running => ("Building...", Indicator::Live),
+            BuildState::Succeeded => ("Build succeeded", Indicator::On),
+            BuildState::Failed => ("Build failed", Indicator::Alert),
+            BuildState::Canceled => ("Build canceled", Indicator::Idle),
+        }
+    }
+
+    fn diagnostic_counts(&self) -> (usize, usize) {
+        let errors = self
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Error)
+            .count();
+        let warnings = self
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Warning)
+            .count();
+        (errors, warnings)
+    }
+
     fn record_completed(&mut self, snapshot: &BuildSnapshot) {
         if matches!(snapshot.state, BuildState::Succeeded | BuildState::Failed) {
             self.diagnostics.clone_from(&snapshot.diagnostics);
@@ -82,6 +109,38 @@ impl Drop for BuildUi {
 }
 
 impl Workspace {
+    pub(super) fn render_build_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (status, kind) = self.build_ui.status();
+        let (errors, warnings) = self.build_ui.diagnostic_counts();
+        let label = if errors + warnings > 0 {
+            format!("{status} · {errors} errors, {warnings} warnings")
+        } else {
+            status.to_owned()
+        };
+        div()
+            .flex()
+            .min_w(gpui::px(0.0))
+            .items_center()
+            .gap(spacing::small())
+            .child(indicator("status-build", kind))
+            .child(
+                div().debug_selector(|| "build-status-control".into()).min_w(gpui::px(0.0)).child(
+                    Button::new("status-build-output", label)
+                        .quiet()
+                        .tooltip(if cfg!(target_os = "macos") {
+                            "Show or hide build output (Cmd+J)"
+                        } else {
+                            "Show or hide build output (Ctrl+J)"
+                        })
+                        .selected(self.build_ui.visible)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_build_output(window, cx);
+                            this.focus_editor(window, cx);
+                        })),
+                ),
+            )
+    }
+
     pub(super) fn can_build(&self) -> bool {
         self.project.is_some() || self.document.as_ref().is_some_and(|document| document.path.is_none())
     }
@@ -343,25 +402,8 @@ impl Workspace {
     pub(super) fn render_build_output(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let snapshot = &self.build_ui.snapshot;
         self.build_log.update(cx, |log, cx| log.set_read_only_text(&snapshot.output, cx));
-        let status = match snapshot.state {
-            BuildState::Idle => "No build yet",
-            BuildState::Running => "Building...",
-            BuildState::Succeeded => "Build succeeded",
-            BuildState::Failed => "Build failed",
-            BuildState::Canceled => "Build canceled",
-        };
-        let errors = self
-            .build_ui
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.severity == Severity::Error)
-            .count();
-        let warnings = self
-            .build_ui
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.severity == Severity::Warning)
-            .count();
+        let (status, kind) = self.build_ui.status();
+        let (errors, warnings) = self.build_ui.diagnostic_counts();
         let mut entries = div().id("build-diagnostics").flex().flex_col().flex_shrink_0().gap(spacing::small());
         let mut index = 0_usize;
         for ((path, severity), diagnostics) in grouped(&self.build_ui.diagnostics) {
@@ -430,6 +472,7 @@ impl Workspace {
             });
         chrome_strip()
             .size_full()
+            .bg(colors().surface)
             .overflow_hidden()
             .flex()
             .flex_col()
@@ -440,15 +483,7 @@ impl Workspace {
                     .flex_shrink_0()
                     .items_center()
                     .gap(spacing::small())
-                    .child(indicator(
-                        "build-status",
-                        match snapshot.state {
-                            BuildState::Running => Indicator::Live,
-                            BuildState::Succeeded => Indicator::On,
-                            BuildState::Failed => Indicator::Alert,
-                            BuildState::Idle | BuildState::Canceled => Indicator::Idle,
-                        },
-                    ))
+                    .child(indicator("build-status", kind))
                     .child(
                         div()
                             .flex_1()

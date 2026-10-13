@@ -1,4 +1,4 @@
-use gpui::{App, ClickEvent, ColorExt, ElementId, IntoElement, RenderOnce, SharedString, Window, div, prelude::*};
+use gpui::{App, ClickEvent, ColorExt, Context, ElementId, IntoElement, Render, RenderOnce, SharedString, Window, div, prelude::*};
 use ligature_theme::{colors, spacing, typography};
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -17,6 +17,8 @@ pub struct Button {
     label: SharedString,
     disabled: bool,
     selected: bool,
+    full_width: bool,
+    tooltip: Option<SharedString>,
     style: ButtonStyle,
     on_click: Option<ClickHandler>,
 }
@@ -28,6 +30,8 @@ impl Button {
             label: label.into(),
             disabled: false,
             selected: false,
+            full_width: false,
+            tooltip: None,
             style: ButtonStyle::Ghost,
             on_click: None,
         }
@@ -45,6 +49,16 @@ impl Button {
 
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    pub fn full_width(mut self) -> Self {
+        self.full_width = true;
+        self
+    }
+
+    pub fn tooltip(mut self, text: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(text.into());
         self
     }
 
@@ -79,6 +93,8 @@ impl RenderOnce for Button {
         div()
             .id(self.id)
             .flex()
+            .min_w(gpui::px(0.0))
+            .when(self.full_width, |button| button.w_full())
             .items_center()
             .when(quiet, |button| button.justify_start())
             .when(!quiet, |button| button.justify_center())
@@ -91,6 +107,10 @@ impl RenderOnce for Button {
             .line_height(typography::line_height())
             .bg(background)
             .text_color(foreground)
+            .when(filled, |button| button.font_weight(gpui::FontWeight::SEMIBOLD))
+            .when_some(self.tooltip, |button, text| {
+                button.tooltip(move |_, cx| cx.new(|_| ButtonTooltip { text: text.clone() }).into())
+            })
             .when(!self.disabled, |button| {
                 button
                     .focusable()
@@ -113,6 +133,27 @@ impl RenderOnce for Button {
                     .focus(|style| style.border_color(colors.focus))
                     .when_some(self.on_click, |button, handler| button.on_click(handler))
             })
-            .child(self.label)
+            .child(div().min_w(gpui::px(0.0)).overflow_hidden().text_ellipsis().child(self.label))
+    }
+}
+
+struct ButtonTooltip {
+    text: SharedString,
+}
+
+impl Render for ButtonTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(gpui::px(480.0))
+            .px(spacing::medium())
+            .py(spacing::small())
+            .rounded(spacing::radius())
+            .border_1()
+            .border_color(colors().border)
+            .bg(colors().surface)
+            .text_color(colors().text)
+            .text_size(typography::small_size())
+            .line_height(typography::line_height())
+            .child(self.text.clone())
     }
 }

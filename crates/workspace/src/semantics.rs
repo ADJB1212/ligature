@@ -266,9 +266,11 @@ impl Workspace {
                 }
                 let location = entry.location.clone();
                 rows.push(
-                    div().pl(px(depth as f32 * 12.0)).child(
+                    div().min_w(px(0.0)).pl(px(depth.min(8) as f32 * 12.0)).child(
                         Button::new(("outline-entry", row), entry.title.clone())
                             .quiet()
+                            .full_width()
+                            .tooltip(entry.title.clone())
                             .disabled(self.busy)
                             .on_click(cx.listener(move |workspace, _, window, cx| workspace.navigate_semantic(location.clone(), window, cx))),
                     ),
@@ -279,9 +281,11 @@ impl Workspace {
                 let range = entry.range.clone();
                 let version = (state.buffer().id(), state.buffer().revision());
                 rows.push(
-                    div().pl(px(entry.level.saturating_sub(2) as f32 * 12.0)).child(
+                    div().min_w(px(0.0)).pl(px(entry.level.saturating_sub(2) as f32 * 12.0)).child(
                         Button::new(("outline-local", row), entry.title.clone())
                             .quiet()
+                            .full_width()
+                            .tooltip(entry.title.clone())
                             .disabled(self.busy)
                             .on_click(cx.listener(move |workspace, _, window, cx| {
                                 let state = workspace.editor.read(cx).state();
@@ -318,17 +322,16 @@ impl Workspace {
                 }
             }
         }
-        div()
-            .id("document-outline")
-            .w(px(220.0))
-            .h_full()
-            .flex_shrink_0()
+        let content = div()
+            .id("outline-entries")
+            .flex_1()
+            .min_h(px(0.0))
+            .min_w(px(0.0))
             .overflow_y_scroll()
             .px(spacing::medium())
-            .py(spacing::large())
-            .bg(colors().background)
-            .child(caption("Outline"))
+            .py(spacing::medium())
             .when(!fresh, |view| view.child(caption("Updating outline...")))
+            .when(fresh && rows.is_empty(), |view| view.child(caption("Sections will appear here.")))
             .children(rows)
             .when(fresh, |view| {
                 let unresolved = index.unresolved_references.len() + index.unresolved_citations.len();
@@ -349,6 +352,7 @@ impl Workspace {
                             let location = location.clone();
                             Button::new(("unresolved-key", row), format!("Unresolved: {key}"))
                                 .quiet()
+                                .full_width()
                                 .disabled(self.busy)
                                 .on_click(cx.listener(move |workspace, _, window, cx| workspace.navigate_semantic(location.clone(), window, cx)))
                         }),
@@ -358,6 +362,7 @@ impl Workspace {
             .children(definitions.into_iter().enumerate().map(|(row, (label, location))| {
                 Button::new(("duplicate-definition", row), label)
                     .quiet()
+                    .full_width()
                     .disabled(self.busy)
                     .on_click(cx.listener(move |workspace, _, window, cx| workspace.navigate_semantic(location.clone(), window, cx)))
             }))
@@ -366,6 +371,15 @@ impl Workspace {
                     .errors
                     .iter()
                     .map(|(path, error)| inline_error(format!("{}: {error}", path.display()))),
-            )
+            );
+        div()
+            .id("document-outline")
+            .debug_selector(|| "document-outline".into())
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(colors().chrome)
+            .child(ligature_ui::panel_header("Outline"))
+            .child(content)
     }
 }

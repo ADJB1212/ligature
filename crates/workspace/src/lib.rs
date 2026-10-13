@@ -25,7 +25,7 @@ use ligature_buffer::Buffer;
 use ligature_editor::Editor;
 use ligature_fs::{FileState, FileWatcher, LoadedFile};
 use ligature_theme::{colors, spacing, typography};
-use ligature_ui::{Button, Indicator, bottom_pane, caption, chrome_strip, indicator, inline_error, split_pane, vertical_seam};
+use ligature_ui::{Button, Indicator, bottom_pane, caption, chrome_strip, hairline, indicator, inline_error, split_pane, vertical_seam};
 
 pub use ligature_preview::{FitPage, FitWidth, ZoomIn, ZoomOut};
 
@@ -581,7 +581,7 @@ impl Render for Workspace {
                 let editor = if self.document.is_some() {
                     self.editor.clone().into_any_element()
                 } else {
-                    empty_editor().into_any_element()
+                    self.render_empty_editor(cx).into_any_element()
                 };
                 let editor = if self.build_ui.visible {
                     bottom_pane(
@@ -608,11 +608,27 @@ impl Render for Workspace {
                     .flex()
                     .flex_1()
                     .min_h(gpui::px(0.0))
-                    .when(self.project.is_some() && self.project_visible, |view| {
-                        view.child(self.render_tree(cx)).child(vertical_seam())
-                    })
-                    .when(self.semantic_ui.visible, |view| {
-                        view.child(self.render_outline(cx)).child(vertical_seam())
+                    .when((self.project.is_some() && self.project_visible) || self.semantic_ui.visible, |view| {
+                        view.child(
+                            div()
+                                .id("workspace-sidebar")
+                                .debug_selector(|| "workspace-sidebar".into())
+                                .w(px(200.0))
+                                .h_full()
+                                .flex_shrink_0()
+                                .flex()
+                                .flex_col()
+                                .overflow_hidden()
+                                .bg(colors().chrome)
+                                .when(self.project.is_some() && self.project_visible, |view| {
+                                    view.child(div().flex_1().min_h(px(0.0)).overflow_hidden().child(self.render_tree(cx)))
+                                })
+                                .when(self.semantic_ui.visible, |view| {
+                                    view.when(self.project.is_some() && self.project_visible, |view| view.child(hairline()))
+                                        .child(div().flex_1().min_h(px(0.0)).overflow_hidden().child(self.render_outline(cx)))
+                                }),
+                        )
+                        .child(vertical_seam())
                     })
                     .child(div().flex_1().min_w(gpui::px(0.0)).child(split_pane(
                         editor_pane,
@@ -624,6 +640,7 @@ impl Render for Workspace {
                         }),
                     )))
             })
+            .child(self.render_status_bar(cx))
     }
 }
 
@@ -647,21 +664,28 @@ impl Workspace {
             .border_b_1()
             .border_color(colors().border)
             .child(
-                Button::new("open-project", "Open Project")
-                    .disabled(self.busy)
-                    .on_click(cx.listener(|this, _, window, cx| this.start(Intent::OpenProject, window, cx))),
-            )
-            .child(
                 div()
-                    .flex_1()
+                    .max_w(px(240.0))
                     .min_w(px(0.0))
                     .overflow_hidden()
                     .text_ellipsis()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(self.project.as_ref().map_or_else(
                         || "Ligature".to_owned(),
                         |project| project.root.file_name().unwrap_or_default().to_string_lossy().into_owned(),
                     )),
             )
+            .child(
+                Button::new("open-project", "Open Project")
+                    .tooltip(if cfg!(target_os = "macos") {
+                        "Open a project folder (Cmd+Shift+O)"
+                    } else {
+                        "Open a project folder (Ctrl+Shift+O)"
+                    })
+                    .disabled(self.busy)
+                    .on_click(cx.listener(|this, _, window, cx| this.start(Intent::OpenProject, window, cx))),
+            )
+            .child(div().flex_1().min_w(px(0.0)))
             .child(
                 div()
                     .flex()
@@ -671,13 +695,20 @@ impl Workspace {
                         self.build_ui.running()
                             || self.bundle_ui.busy()
                             || (self.search.visible && (self.search.running || self.search.previewing || self.search.applying)),
-                        |view| view.child(indicator("toolbar-live", Indicator::Live)).child(caption("Working...")),
+                        |view| view.child(indicator("toolbar-live", Indicator::Live)),
                     )
                     .child(if self.build_ui.running() {
                         Button::new("cancel-build", "Stop").on_click(cx.listener(|this, _, _, cx| this.cancel_build(cx)))
                     } else {
                         Button::new("build", "Build")
                             .filled()
+                            .tooltip(if !self.can_build() {
+                                "Open a project folder to build a saved document."
+                            } else if cfg!(target_os = "macos") {
+                                "Build document (Cmd+B)"
+                            } else {
+                                "Build document (Ctrl+B)"
+                            })
                             .disabled(self.busy || !self.can_build())
                             .on_click(cx.listener(|this, _, window, cx| this.start_build(window, cx)))
                     }),
@@ -693,9 +724,7 @@ impl Workspace {
             .overflow_x_scroll()
             .flex_shrink_0()
             .h(px(40.0))
-            .items_center()
-            .px(spacing::medium())
-            .gap(spacing::small())
+            .items_stretch()
             .bg(colors.chrome)
             .border_b_1()
             .border_color(colors.border)
@@ -709,44 +738,115 @@ impl Workspace {
                 let group = format!("tab-{index}");
                 div()
                     .id(("tab", index))
+                    .debug_selector(move || format!("document-tab-{index}"))
                     .group(group.clone())
                     .flex()
                     .flex_shrink_0()
+                    .max_w(px(200.0))
+                    .min_w(px(0.0))
                     .items_center()
-                    .rounded(spacing::radius())
-                    .when(active, |view| view.bg(colors.surface))
+                    .px(spacing::small())
+                    .border_b_2()
+                    .border_color(colors.border)
+                    .when(active, |view| view.bg(colors.background).border_color(colors.focus))
                     .when(!active, |view| view.hover(|style| style.bg(colors.hover)))
                     .child(
                         Button::new(("activate-tab", index), document.name())
                             .quiet()
                             .selected(active)
+                            .tooltip(document.path.as_ref().map_or_else(|| document.name(), |path| path.display().to_string()))
                             .disabled(self.busy)
                             .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(index, window, cx))),
                     )
                     .when(dirty, |view| view.child(indicator(("dirty-tab", index), Indicator::On)))
                     .child(
                         div()
+                            .flex_shrink_0()
                             .when(!active && !dirty, |view| view.invisible().group_hover(group, |style| style.visible()))
-                            .child(Button::new(("close-tab", index), "×").quiet().disabled(self.busy).on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    this.start(Intent::CloseTab(index), window, cx);
-                                },
-                            ))),
+                            .child(
+                                Button::new(("close-tab", index), "×")
+                                    .quiet()
+                                    .tooltip("Close document")
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.start(Intent::CloseTab(index), window, cx);
+                                    })),
+                            ),
                     )
             }))
+            .when(self.tabs.is_empty(), |view| {
+                view.child(div().px(spacing::large()).flex().items_center().child(caption("Source")))
+            })
     }
-}
 
-fn empty_editor() -> impl IntoElement {
-    let colors = colors();
-    div()
-        .size_full()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(spacing::small())
-        .bg(colors.background)
-        .child(caption("DOCUMENT"))
-        .child("Create or open a TeX file.")
+    fn document_status(&self, cx: &App) -> &'static str {
+        match &self.document {
+            None => "No document",
+            Some(_) if self.external_pending => "Changed on disk",
+            Some(document) if document.path.is_none() => "Unsaved document",
+            Some(_) if self.dirty(cx) => "Unsaved changes",
+            Some(_) => "Saved",
+        }
+    }
+
+    fn caret_status(&self, cx: &App) -> String {
+        let state = self.editor.read(cx).state();
+        let line = state.line_index(state.caret());
+        let column = state.text()[state.line_range(line).start..state.caret()].chars().count();
+        format!("Ln {}, Col {}", line + 1, column + 1)
+    }
+
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        chrome_strip()
+            .id("workspace-status")
+            .debug_selector(|| "workspace-status".into())
+            .h(px(28.0))
+            .py(px(0.0))
+            .flex()
+            .items_center()
+            .gap(spacing::large())
+            .overflow_hidden()
+            .border_t_1()
+            .border_color(colors().border)
+            .child(div().flex_shrink_0().child(caption(self.document_status(cx))))
+            .child(div().flex_1().min_w(px(0.0)).overflow_hidden().child(self.render_build_status(cx)))
+            .when(self.document.is_some(), |view| {
+                view.child(div().flex_shrink_0().child(caption(self.caret_status(cx))))
+            })
+    }
+
+    fn render_empty_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("empty-editor")
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(spacing::large())
+            .px(spacing::large())
+            .bg(colors().background)
+            .child(div().text_size(px(20.0)).font_weight(gpui::FontWeight::SEMIBOLD).child("Start writing"))
+            .child(caption("Create a document or open an existing TeX file."))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(spacing::medium())
+                    .child(
+                        div().debug_selector(|| "empty-new-action".into()).child(
+                            Button::new("empty-new", "New document")
+                                .filled()
+                                .full_width()
+                                .disabled(self.busy)
+                                .on_click(cx.listener(|this, _, window, cx| this.start(Intent::New, window, cx))),
+                        ),
+                    )
+                    .child(
+                        Button::new("empty-open", "Open file...")
+                            .disabled(self.busy)
+                            .on_click(cx.listener(|this, _, window, cx| this.start(Intent::Open, window, cx))),
+                    ),
+            )
+    }
 }

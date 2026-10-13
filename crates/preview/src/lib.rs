@@ -10,7 +10,7 @@ use gpui::{
 use ligature_pdf::{Document, Page};
 use ligature_synctex::{Mapping, PdfPosition, SourcePosition};
 use ligature_theme::{colors, spacing};
-use ligature_ui::{Indicator, caption, chrome_strip, indicator, inline_error};
+use ligature_ui::{Indicator, caption, chrome_strip, indicator, inline_error, panel_header};
 use state::{Cache, RenderKey, accepts, raster_scale, zoom_anchor};
 use std::{ops::Range, path::PathBuf, sync::Arc};
 
@@ -505,7 +505,7 @@ impl Render for Preview {
             .size_full()
             .flex()
             .flex_col()
-            .bg(colors().background)
+            .bg(colors().gutter)
             .key_context("LigaturePreview")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom_in(cx)))
@@ -513,16 +513,11 @@ impl Render for Preview {
             .on_action(cx.listener(|this, _: &FitWidth, _, cx| this.set_zoom(Zoom::FitWidth, cx)))
             .on_action(cx.listener(|this, _: &FitPage, _, cx| this.set_zoom(Zoom::FitPage, cx)))
             .child(
-                chrome_strip()
+                panel_header("PDF Preview")
                     .id("preview-toolbar")
                     .debug_selector(|| "preview-toolbar".into())
-                    .flex()
-                    .h(px(40.0))
-                    .items_center()
-                    .gap(spacing::large())
-                    .border_b_1()
-                    .border_color(colors().border)
-                    .child(div().flex_1().child(caption("PDF Preview")))
+                    .px(spacing::medium())
+                    .gap(spacing::medium())
                     .when(count > 0, |view| {
                         view.child(caption(format!("{} / {count}", self.page + 1)))
                             .child(caption(format!("{:.0}%", self.scale * 100.0)))
@@ -615,15 +610,32 @@ impl Render for Preview {
                                 .flex_col()
                                 .items_center()
                                 .justify_center()
-                                .gap(spacing::medium())
-                                .text_color(colors().muted_text)
-                                .child("Your document preview")
+                                .gap(spacing::large())
+                                .px(spacing::large())
+                                .child(
+                                    div()
+                                        .w(px(80.0))
+                                        .h(px(104.0))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(spacing::medium())
+                                        .p(spacing::large())
+                                        .rounded(spacing::radius())
+                                        .border_1()
+                                        .border_color(colors().border)
+                                        .bg(colors().surface)
+                                        .child(div().h(px(3.0)).w(px(28.0)).bg(colors().muted_text))
+                                        .children((0..4).map(|_| div().h(px(2.0)).w_full().bg(colors().border)))
+                                        .child(div().h(px(2.0)).w(px(28.0)).bg(colors().border)),
+                                )
+                                .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Your document preview"))
                                 .child(caption(if live {
                                     "Loading PDF..."
                                 } else if cfg!(target_os = "macos") {
-                                    "Build with Cmd+B"
+                                    "Choose Build or press Cmd+B."
                                 } else {
-                                    "Build with Ctrl+B"
+                                    "Choose Build or press Ctrl+B."
                                 })),
                         )
                     }),

@@ -31,13 +31,13 @@ pub fn colors() -> Colors {
     let ink = rgb_to_hsla(rgb(0x1a2330));
     Colors {
         background: ink,
-        chrome: ink,
-        surface: paper.opacity(0.06),
-        gutter: ink,
+        chrome: rgb_to_hsla(rgb(0x161e29)),
+        surface: rgb_to_hsla(rgb(0x222d3b)),
+        gutter: rgb_to_hsla(rgb(0x18212d)),
         hover: paper.opacity(0.08),
         press: paper.opacity(0.12),
         text: paper,
-        muted_text: rgb_to_hsla(rgb(0x8b97a8)),
+        muted_text: rgb_to_hsla(rgb(0x9aa7b7)),
         border: paper.opacity(0.1),
         accent: paper,
         accent_hover: rgb_to_hsla(rgb(0xf2f5f8)),
@@ -107,7 +107,7 @@ pub mod spacing {
         px(24.0)
     }
     pub fn radius() -> Pixels {
-        px(6.0)
+        px(4.0)
     }
     pub fn pane_boundary() -> Pixels {
         px(6.0)
