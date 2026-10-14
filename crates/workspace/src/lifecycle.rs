@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use gpui::{AsyncWindowContext, Context, PathPromptOptions, PromptButton, PromptLevel, WeakEntity, Window};
+use gpui::{App, AsyncWindowContext, Context, EntityId, PathPromptOptions, PromptButton, PromptLevel, WeakEntity, Window};
+use ligature_buffer::Revision;
 use ligature_fs::{FileState, decode};
 
 use crate::Workspace;
@@ -37,6 +38,14 @@ pub(super) enum Intent {
 }
 
 impl Workspace {
+    fn close_state(&self, cx: &App) -> (EntityId, Revision, bool) {
+        (
+            self.editor.entity_id(),
+            self.editor.read(cx).state().buffer().revision(),
+            self.document.as_ref().is_some_and(|document| document.diverged),
+        )
+    }
+
     pub(super) fn start(&mut self, intent: Intent, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
@@ -224,6 +233,7 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
                 let (count, original) = this
                     .update_in(cx, |workspace, _, _| (workspace.tabs.len(), workspace.active_tab))
                     .map_err(|error| error.to_string())?;
+                let mut confirmed = Vec::with_capacity(count);
                 for index in 0..count {
                     this.update_in(cx, |workspace, window, cx| workspace.switch_tab(index, window, cx))
                         .map_err(|error| error.to_string())?;
@@ -234,12 +244,34 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
                         decision?;
                         return Ok(());
                     }
+                    confirmed.push(
+                        this.update_in(cx, |workspace, _, cx| workspace.close_state(cx))
+                            .map_err(|error| error.to_string())?,
+                    );
                 }
                 this.update_in(cx, |workspace, window, cx| workspace.switch_tab(original, window, cx))
                     .map_err(|error| error.to_string())?;
                 super::session::save_session(this, cx).await?;
                 super::builds::shutdown(this, cx).await?;
                 this.update_in(cx, |workspace, window, cx| {
+                    let unchanged = workspace.tabs.len() == confirmed.len()
+                        && workspace.tabs.iter().enumerate().all(|(index, tab)| {
+                            let state = if index == workspace.active_tab {
+                                workspace.close_state(cx)
+                            } else if let Some(tab) = tab {
+                                (
+                                    tab.editor.entity_id(),
+                                    tab.editor.read(cx).state().buffer().revision(),
+                                    tab.document.diverged,
+                                )
+                            } else {
+                                return false;
+                            };
+                            state == confirmed[index]
+                        });
+                    if !unchanged {
+                        return Err("A document changed while closing. Review your changes and close again.".to_owned());
+                    }
                     workspace.project_task = None;
                     workspace.search.cancel();
                     while workspace.document.is_some() {
@@ -250,8 +282,9 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
                     } else {
                         window.remove_window();
                     }
+                    Ok(())
                 })
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.to_string())??;
             } else if confirm_discard(this, cx).await? {
                 this.update_in(cx, |workspace, window, cx| workspace.close_document(window, cx))
                     .map_err(|error| error.to_string())?;

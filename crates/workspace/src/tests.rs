@@ -1133,6 +1133,30 @@ fn canceling_window_close_keeps_all_tabs_even_after_discarding_another() {
 }
 
 #[test]
+fn window_close_preserves_edits_to_a_tab_that_already_passed_confirmation() {
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    type_text(&mut cx, &root, "first");
+    let first = root.read_with(&cx, |workspace, _| workspace.editor.clone());
+    start(&mut cx, window, Intent::New);
+    type_text(&mut cx, &root, "second");
+    start(&mut cx, window, Intent::CloseWindow);
+    cx.simulate_prompt_answer("Discard");
+    cx.run_until_parked();
+    assert!(cx.has_pending_prompt());
+    first.update(&mut cx, |editor, cx| editor.update_state(|state| state.insert(" later", true), cx));
+    cx.simulate_prompt_answer("Discard");
+    cx.run_until_parked();
+    root.read_with(&cx, |workspace, cx| {
+        assert_eq!(workspace.tabs.len(), 2);
+        assert_eq!(first.read(cx).state().text(), "first later");
+        assert!(workspace.error.as_ref().unwrap().contains("changed while closing"));
+        assert!(!workspace.busy);
+    });
+    assert!(cx.update_window(window.into(), |_, _, _| ()).is_ok());
+}
+
+#[test]
 fn directory_picker_loads_project_settings_and_persists_root_selection() {
     let directory = tempfile::tempdir().unwrap();
     let main = directory.path().join("main file.tex");

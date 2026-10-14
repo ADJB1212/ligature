@@ -87,6 +87,27 @@ fn atomic_save_preserves_permissions_and_symbolic_links() {
     assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o640);
 }
 
+#[cfg(unix)]
+#[test]
+fn saving_through_a_dangling_symbolic_link_preserves_the_link() {
+    use std::os::unix::fs::symlink;
+    let directory = tempfile::tempdir().unwrap();
+    let target = directory.path().join("missing.tex");
+    let alias = directory.path().join("alias.tex");
+    symlink(&target, &alias).unwrap();
+    let error = write_atomic(&alias, "local").unwrap_err().to_string();
+    assert!(error.contains("symbolic link"));
+    assert_eq!(fs::read_link(&alias).unwrap(), target);
+    assert!(!target.exists());
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn watching_a_filesystem_root_returns_an_error() {
+    assert!(FileWatcher::new(Path::new("/").to_owned(), FileState::Missing).is_err());
+}
+
+#[track_caller]
 fn wait_for_event(events: &async_channel::Receiver<FileState>) -> FileState {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {

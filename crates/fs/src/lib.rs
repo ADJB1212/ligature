@@ -76,6 +76,13 @@ pub fn resolve(path: &Path) -> Result<PathBuf, FileError> {
     match fs::canonicalize(path) {
         Ok(path) => Ok(path),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            match fs::symlink_metadata(path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(error(path, "resolve", "the symbolic link target does not exist"));
+                }
+                Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(error(path, "resolve", err)),
+                _ => {}
+            }
             let parent = path
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())

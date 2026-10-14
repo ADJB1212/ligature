@@ -4,7 +4,8 @@ use std::{
     collections::BTreeMap,
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{Arc, Mutex, OnceLock, Weak, mpsc},
+    thread,
     time::Duration,
 };
 
@@ -31,7 +32,7 @@ fn reconcile(subscriptions: &Subscriptions, event: notify::Result<Event>) {
         for subscriber in subscribers {
             if current != subscriber.previous {
                 subscriber.previous = current.clone();
-                let _ = subscriber.sender.try_send(current.clone());
+                let _ = subscriber.sender.force_send(current.clone());
             }
         }
     }
@@ -47,6 +48,7 @@ struct WatchService {
     polling: Option<PollWatcher>,
     directories: BTreeMap<PathBuf, DirectoryWatch>,
     subscriptions: Subscriptions,
+    _reconcile_stop: mpsc::Sender<()>,
 }
 
 impl WatchService {
@@ -54,11 +56,20 @@ impl WatchService {
         let subscriptions = Subscriptions::default();
         let callback = Arc::clone(&subscriptions);
         let native = notify::recommended_watcher(move |event| reconcile(&callback, event)).ok();
+        let (stop, stopped) = mpsc::channel();
+        let periodic = Arc::downgrade(&subscriptions);
+        thread::spawn(move || {
+            while matches!(stopped.recv_timeout(Duration::from_millis(500)), Err(mpsc::RecvTimeoutError::Timeout)) {
+                let Some(subscriptions) = periodic.upgrade() else { break };
+                reconcile(&subscriptions, Ok(Event::new(EventKind::Any)));
+            }
+        });
         Self {
             native,
             polling: None,
             directories: BTreeMap::new(),
             subscriptions,
+            _reconcile_stop: stop,
         }
     }
 
@@ -138,10 +149,13 @@ impl FileWatcher {
 
     fn subscribe(path: PathBuf, initial: FileState, service: Arc<Mutex<WatchService>>) -> io::Result<Self> {
         let path = resolve(&path).map_err(io::Error::other)?;
-        let (sender, events) = async_channel::unbounded();
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "a file path is required"))?;
+        let (sender, events) = async_channel::bounded(1);
         {
             let mut service = service.lock().unwrap();
-            service.watch(path.parent().unwrap())?;
+            service.watch(parent)?;
             let mut subscriptions = service.subscriptions.lock().unwrap();
             let current = FileState::read(&path);
             if current != initial {
@@ -184,7 +198,58 @@ impl Drop for FileWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, thread, time::Instant};
+    use std::{fs, time::Instant};
+
+    #[test]
+    fn periodic_reconciliation_detects_changes_without_native_notifications() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("watched.tex");
+        fs::write(&path, "initial").unwrap();
+        let mut service = WatchService::new();
+        service.native = Some(notify::recommended_watcher(|_| {}).unwrap());
+        let watcher = FileWatcher::subscribe(path.clone(), FileState::read(&path), Arc::new(Mutex::new(service))).unwrap();
+        assert!(watcher.service.lock().unwrap().directories.values().all(|watch| watch.native));
+        let events = watcher.events();
+        for expected in [
+            FileState::Present(b"replacement".to_vec()),
+            FileState::Missing,
+            FileState::Present(b"recreated".to_vec()),
+        ] {
+            match &expected {
+                FileState::Present(bytes) => {
+                    crate::write_atomic(&path, std::str::from_utf8(bytes).unwrap()).unwrap();
+                }
+                FileState::Missing => fs::remove_file(&path).unwrap(),
+                FileState::Unreadable(_) => unreachable!(),
+            }
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Ok(event) = events.try_recv() {
+                    assert_eq!(event, expected);
+                    break;
+                }
+                assert!(Instant::now() < deadline, "periodic reconciliation did not report a change");
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+
+    #[test]
+    fn slow_subscribers_receive_the_latest_state_without_queuing_old_contents() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("watched.tex");
+        fs::write(&path, "initial").unwrap();
+        let watcher = FileWatcher::new(path.clone(), FileState::Missing).unwrap();
+        let subscriptions = Arc::clone(&watcher.service.lock().unwrap().subscriptions);
+        for text in ["first", "second", "latest"] {
+            fs::write(&path, text).unwrap();
+            reconcile(&subscriptions, Ok(Event::new(EventKind::Any)));
+        }
+        let events = watcher.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events.try_recv().unwrap(), FileState::Present(b"latest".to_vec()));
+        assert!(events.is_empty());
+    }
 
     #[test]
     fn polling_fallback_reports_replacements_deletion_and_recreation() {
