@@ -87,8 +87,8 @@ fn build_engine() -> Result<(), String> {
         .env("TECTONIC_DEP_BACKEND", "pkg-config")
         .env("TECTONIC_PKGCONFIG_FORCE_SEMI_STATIC", "1")
         .env("PKG_CONFIG_PATH", env::join_paths(pkg_config_paths).map_err(|error| error.to_string())?)
-        .env("CFLAGS", "-std=gnu17")
-        .env("CXXFLAGS", "-std=c++17");
+        .env("CFLAGS", "-std=gnu17 -fuse-ld=lld -march=native")
+        .env("CXXFLAGS", "-std=c++17 -fuse-ld=lld -march=native");
     for name in [
         "CARGO_MAKEFLAGS",
         "MAKEFLAGS",
@@ -154,7 +154,9 @@ fn stage_language_server(storage: &Path, resources: &Path, target: &str) -> Resu
             .arg("--target-dir")
             .arg(storage.join("texlab-build"))
             .arg("--jobs")
-            .arg(env::var_os("NUM_JOBS").unwrap_or_else(|| "1".into()));
+            .arg(env::var_os("NUM_JOBS").unwrap_or_else(|| "1".into()))
+            .env("CFLAGS", "-fuse-ld=lld -march=native")
+            .env("CXXFLAGS", "-fuse-ld=lld -march=native");
         for name in [
             "CARGO_MAKEFLAGS",
             "MAKEFLAGS",

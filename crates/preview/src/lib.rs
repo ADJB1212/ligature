@@ -10,8 +10,8 @@ use gpui::{
 use ligature_pdf::{Document, Page};
 use ligature_synctex::{Mapping, PdfPosition, SourcePosition};
 use ligature_theme::{colors, spacing};
-use ligature_ui::{Indicator, caption, chrome_strip, indicator, inline_error, panel_header};
-use state::{Cache, RenderKey, accepts, raster_scale, zoom_anchor};
+use ligature_ui::{Button, Indicator, caption, chrome_strip, indicator, inline_error, panel_header};
+use state::{Cache, RenderKey, accepts, limit_zoom, raster_scale, zoom_anchor};
 use std::{ops::Range, path::PathBuf, sync::Arc};
 
 actions!(ligature_preview, [ZoomIn, ZoomOut, FitWidth, FitPage]);
@@ -253,13 +253,14 @@ impl Preview {
 
     fn schedule(&mut self, cx: &mut Context<Self>) {
         let visible = self.visible_pages();
-        let keys: Vec<_> = visible.map(|page| self.key(page)).collect();
-        self.images.retain(|(key, _)| keys.contains(key));
+        let keys: Vec<_> = visible.clone().map(|page| self.key(page)).collect();
+        self.images
+            .retain(|(key, _)| key.generation == self.generation && visible.contains(&key.page));
         for key in &keys {
             if !self.images.iter().any(|(cached, _)| cached == key)
                 && let Some(image) = self.cache.get(*key)
             {
-                self.images.push((*key, image));
+                self.set_image(*key, image);
             }
         }
         if self.render_task.is_some() {
@@ -288,7 +289,7 @@ impl Preview {
                     match result {
                         Ok((bytes, image)) => {
                             preview.cache.insert(key, bytes, Arc::clone(&image));
-                            preview.images.push((key, image));
+                            preview.set_image(key, image);
                         }
                         Err(error) => {
                             preview.failed_keys.push(key);
@@ -301,6 +302,21 @@ impl Preview {
             })
             .ok();
         }));
+    }
+
+    fn set_image(&mut self, key: RenderKey, image: Arc<RenderImage>) {
+        if let Some(entry) = self.images.iter_mut().find(|(cached, _)| cached.page == key.page) {
+            *entry = (key, image);
+        } else {
+            self.images.push((key, image));
+        }
+    }
+
+    fn page_image(&self, page: usize) -> Option<&Arc<RenderImage>> {
+        self.images
+            .iter()
+            .find(|(key, _)| key.generation == self.generation && key.page == page)
+            .map(|(_, image)| image)
     }
 
     fn go_to(&mut self, page: usize, cx: &mut Context<Self>) {
@@ -328,17 +344,27 @@ impl Preview {
     }
 
     pub fn set_zoom(&mut self, zoom: Zoom, cx: &mut Context<Self>) {
+        let center = self.viewport.origin + (self.viewport.size / 2.0).into();
+        self.set_zoom_at(zoom, center, cx);
+    }
+
+    fn set_zoom_at(&mut self, zoom: Zoom, position: Point<Pixels>, cx: &mut Context<Self>) {
         if !self.failed_keys.is_empty() {
             self.error = None;
         }
         self.failed_keys.clear();
         self.zoom = zoom;
-        self.update_scale(cx);
+        self.update_scale_at(position);
         self.schedule(cx);
         cx.notify();
     }
 
     fn update_scale(&mut self, _cx: &mut Context<Self>) {
+        let center = self.viewport.origin + (self.viewport.size / 2.0).into();
+        self.update_scale_at(center);
+    }
+
+    fn update_scale_at(&mut self, position: Point<Pixels>) {
         if self.document.is_none() {
             return;
         }
@@ -351,17 +377,25 @@ impl Preview {
             .unwrap()
             .pages()
             .iter()
-            .map(|page| self.zoom.scale(*page, (width - 24.0).max(1.0), (height - 24.0).max(1.0)))
+            .map(|page| {
+                let scale = self.zoom.scale(*page, (width - 24.0).max(1.0), (height - 24.0).max(1.0));
+                limit_zoom(*page, scale, self.density)
+            })
             .fold(f64::INFINITY, f64::min);
         if scale != self.scale {
-            let origin = self.page_bounds().origin - self.viewport.origin;
+            let anchor = position - self.viewport.origin;
+            let page = self
+                .layout
+                .partition_point(|bounds| bounds.bottom() < anchor.y + self.pan.y)
+                .min(self.layout.len() - 1);
+            let origin = self.bounds_for_page(page).origin - self.viewport.origin;
             self.pan = point_px(
-                zoom_anchor(-f64::from(f32::from(origin.x)), width, self.scale, scale),
-                zoom_anchor(-f64::from(f32::from(origin.y)), height, self.scale, scale),
+                zoom_anchor(-f64::from(f32::from(origin.x)), f64::from(f32::from(anchor.x)), self.scale, scale),
+                zoom_anchor(-f64::from(f32::from(origin.y)), f64::from(f32::from(anchor.y)), self.scale, scale),
             );
             self.scale = scale;
             self.rebuild_layout();
-            self.pan += self.page_inset();
+            self.pan += self.layout[page].origin;
         }
         self.clamp_pan();
     }
@@ -521,6 +555,12 @@ impl Render for Preview {
                     .when(count > 0, |view| {
                         view.child(caption(format!("{} / {count}", self.page + 1)))
                             .child(caption(format!("{:.0}%", self.scale * 100.0)))
+                            .child(
+                                Button::new("preview-reset-zoom", "Reset")
+                                    .quiet()
+                                    .tooltip("Reset zoom to 100%")
+                                    .on_click(cx.listener(|this, _, _, cx| this.set_zoom(Zoom::Scale(1.0), cx))),
+                            )
                     }),
             )
             .when_some(self.error.clone(), |view, error| view.child(inline_error(error)))
@@ -545,6 +585,13 @@ impl Render for Preview {
                         this.scroll(event.delta.pixel_delta(px(20.0)), cx);
                         cx.stop_propagation();
                     }))
+                    .on_pinch(cx.listener(|this, event: &gpui::PinchEvent, _, cx| {
+                        let factor = 1.0 + f64::from(event.delta);
+                        if this.document.is_some() && factor.is_finite() && factor > 0.0 && factor != 1.0 {
+                            this.set_zoom_at(Zoom::Scale(this.scale * factor), event.position, cx);
+                        }
+                        cx.stop_propagation();
+                    }))
                     .child(
                         canvas(
                             move |bounds, window, cx| {
@@ -565,7 +612,7 @@ impl Render for Preview {
                                         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
                                             window.paint_quad(fill(page_bounds, gpui::white()));
                                         });
-                                        if let Some((_, image)) = preview.images.iter().find(|(key, _)| *key == preview.key(index)) {
+                                        if let Some(image) = preview.page_image(index) {
                                             let _ = window.paint_image(bounds, page_bounds, gpui::Corners::default(), Arc::clone(image), 0, false);
                                         }
                                         if let Some(highlight) = preview.highlight
@@ -745,6 +792,54 @@ mod tests {
     }
 
     #[test]
+    fn zoom_keeps_page_images_visible_until_replacement_rasters_are_ready() {
+        let (_directory, pdf) = fixture();
+        let mut cx = TestAppContext::single();
+        let preview = cx.new(Preview::new);
+        preview.update(&mut cx, |preview, cx| {
+            preview.document = Some(Document::load(&pdf).unwrap());
+            preview.viewport = Bounds::new(Point::default(), size(px(100.0), px(100.0)));
+            preview.set_zoom(Zoom::Scale(1.0), cx);
+        });
+        cx.run_until_parked();
+        let original = preview.read_with(&cx, |preview, _| Arc::clone(preview.page_image(0).unwrap()));
+        preview.update(&mut cx, |preview, cx| preview.set_zoom(Zoom::Scale(2.0), cx));
+        cx.run_until_parked();
+        let rendered = preview.read_with(&cx, |preview, _| Arc::clone(preview.page_image(0).unwrap()));
+        assert!(!Arc::ptr_eq(&original, &rendered));
+
+        preview.update(&mut cx, |preview, cx| {
+            for scale in [2.5, 3.0, 0.75] {
+                preview.set_zoom(Zoom::Scale(scale), cx);
+                assert!(Arc::ptr_eq(preview.page_image(0).unwrap(), &rendered));
+                assert_eq!(preview.images.len(), 1);
+                assert_ne!(preview.images[0].0, preview.key(0));
+                assert!(preview.render_task.is_some());
+            }
+            preview.set_zoom(Zoom::Scale(1.0), cx);
+            assert!(Arc::ptr_eq(preview.page_image(0).unwrap(), &original));
+            assert_eq!(preview.images.len(), 1);
+            assert_eq!(preview.images[0].0, preview.key(0));
+
+            preview.set_zoom(Zoom::Scale(1.5), cx);
+            assert!(Arc::ptr_eq(preview.page_image(0).unwrap(), &original));
+        });
+        cx.run_until_parked();
+        preview.update(&mut cx, |preview, cx| {
+            assert!(preview.render_task.is_none());
+            assert_eq!(preview.images.len(), 1);
+            assert_eq!(preview.images[0].0, preview.key(0));
+            assert!(!Arc::ptr_eq(preview.page_image(0).unwrap(), &original));
+            preview.go_to(1, cx);
+            assert!(preview.page_image(0).is_none());
+            preview.clear(cx);
+            assert!(preview.page_image(1).is_none());
+        });
+        cx.run_until_parked();
+        preview.read_with(&cx, |preview, _| assert!(preview.images.is_empty()));
+    }
+
+    #[test]
     fn scrolling_crosses_page_boundaries_and_renders_both_visible_pages() {
         let (_directory, pdf) = fixture();
         let document = Document::load(&pdf).unwrap();
@@ -841,6 +936,128 @@ mod tests {
                 let after = (center - preview.page_bounds().origin) / preview.scale as f32;
                 assert_eq!(before, after);
             }
+        });
+    }
+
+    #[test]
+    fn preview_zoom_stops_at_the_renderable_limit_and_rechecks_display_density() {
+        let (_directory, pdf) = fixture();
+        let mut cx = TestAppContext::single();
+        let preview = cx.new(Preview::new);
+        preview.update(&mut cx, |preview, cx| {
+            let document = Document::load(&pdf).unwrap();
+            let page = document.pages()[0];
+            preview.density = (ligature_pdf::MAX_RASTER_BYTES as f64 / (4.0 * page.width * page.height)).sqrt() / 2.0;
+            preview.document = Some(document);
+            preview.viewport = Bounds::new(Point::default(), size(px(10_000.0), px(10_000.0)));
+            preview.render_task = Some(cx.background_executor().spawn(std::future::pending()));
+            let assert_renderable = |preview: &Preview| {
+                for (index, page) in preview.document.as_ref().unwrap().pages().iter().enumerate() {
+                    let key = preview.key(index);
+                    let (width, height) = page.raster_size(f64::from(key.scale) / 1000.0).unwrap();
+                    assert!(width * height * 4 <= ligature_pdf::MAX_RASTER_BYTES);
+                }
+            };
+            for zoom in [Zoom::Scale(8.0), Zoom::FitWidth, Zoom::FitPage] {
+                preview.set_zoom(zoom, cx);
+                assert!(preview.scale < 8.0);
+                assert_renderable(preview);
+            }
+            let limit = preview.scale;
+            let pan = preview.pan;
+            for _ in 0..3 {
+                preview.zoom_in(cx);
+                assert_eq!(preview.scale, limit);
+                assert_eq!(preview.pan, pan);
+                let pointer = preview.viewport.origin + point(px(40.0), px(60.0));
+                preview.set_zoom_at(Zoom::Scale(preview.scale * 1.25), pointer, cx);
+                assert_eq!(preview.scale, limit);
+                assert_eq!(preview.pan, pan);
+                assert_renderable(preview);
+            }
+            preview.zoom_out(cx);
+            assert!(preview.scale < limit);
+            assert_renderable(preview);
+            preview.set_zoom(Zoom::Scale(8.0), cx);
+            preview.density *= 2.0;
+            preview.update_scale(cx);
+            assert!(preview.scale < limit);
+            assert_renderable(preview);
+            assert!(preview.failed_keys.is_empty());
+            assert!(preview.error.is_none());
+        });
+    }
+
+    #[test]
+    fn trackpad_pinch_zooms_under_the_pointer_without_modifiers_or_focus() {
+        let (_directory, pdf) = fixture();
+        let mut app = TestAppContext::single();
+        let window = app.add_window(|_, cx| Preview::new(cx));
+        let preview = window.root(&mut app).unwrap();
+        let mut cx = gpui::VisualTestContext::from_window(window.into(), &app);
+        cx.simulate_resize(size(px(160.0), px(200.0)));
+        let other_focus = cx.update(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus, cx);
+            preview.update(cx, |preview, cx| {
+                preview.document = Some(Document::load(&pdf).unwrap());
+                preview.set_zoom(Zoom::Scale(2.0), cx);
+            });
+            window.draw(cx).clear(cx);
+            focus
+        });
+        for page in [0, 1] {
+            cx.update(|window, cx| {
+                preview.update(cx, |preview, cx| {
+                    preview.go_to(page, cx);
+                    preview.pan.x = px(100.0);
+                    preview.pan.y += px(80.0);
+                });
+                window.draw(cx).clear(cx);
+            });
+            let bounds = cx.debug_bounds("preview-viewport").unwrap();
+            let position = bounds.origin + point(px(45.0), px(60.0));
+            cx.simulate_mouse_move(position, None, gpui::Modifiers::default());
+            for delta in [0.25, -0.2] {
+                let (scale, before) = preview.read_with(&cx, |preview, _| {
+                    (preview.scale, (position - preview.bounds_for_page(page).origin) / preview.scale as f32)
+                });
+                cx.simulate_event(gpui::PinchEvent {
+                    position,
+                    delta,
+                    ..Default::default()
+                });
+                preview.read_with(&cx, |preview, _| {
+                    assert!((preview.scale - scale * (1.0 + f64::from(delta))).abs() < 0.0001);
+                    let after = (position - preview.bounds_for_page(page).origin) / preview.scale as f32;
+                    assert!((f32::from(before.x - after.x)).abs() < 0.001);
+                    assert!((f32::from(before.y - after.y)).abs() < 0.001);
+                });
+            }
+        }
+        cx.update(|window, _| assert!(other_focus.is_focused(window)));
+
+        let scale = preview.read_with(&cx, |preview, _| preview.scale);
+        let position = cx.debug_bounds("preview-toolbar").unwrap().center();
+        cx.simulate_mouse_move(position, None, gpui::Modifiers::default());
+        cx.simulate_event(gpui::PinchEvent {
+            position,
+            delta: 0.25,
+            ..Default::default()
+        });
+        preview.read_with(&cx, |preview, _| assert_eq!(preview.scale, scale));
+
+        let position = cx.debug_bounds("preview-viewport").unwrap().center();
+        cx.simulate_mouse_move(position, None, gpui::Modifiers::default());
+        let pan = preview.read_with(&cx, |preview, _| preview.pan);
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position,
+            delta: gpui::ScrollDelta::Pixels(point(px(-10.0), px(-20.0))),
+            ..Default::default()
+        });
+        preview.read_with(&cx, |preview, _| {
+            assert_eq!(preview.scale, scale);
+            assert_eq!(preview.pan, pan + point(px(10.0), px(20.0)));
         });
     }
 

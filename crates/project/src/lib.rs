@@ -90,7 +90,7 @@ pub fn directory(path: &Path, output_directory: &Path) -> Directory {
 }
 
 fn excluded_name(name: &str) -> bool {
-    matches!(name, ".git" | "target" | "build" | "out" | ".latexmk" | ".ligature.json") || name.starts_with(".ligature-")
+    matches!(name, ".git" | "target" | "build" | "out" | ".latexmk" | ".ligature.json" | ".DS_Store") || name.starts_with(".ligature-")
 }
 
 pub fn eligible_search_path(root: &Path, path: &Path, output_directory: &Path) -> bool {

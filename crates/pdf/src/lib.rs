@@ -2,7 +2,7 @@
 
 use std::{path::Path, sync::Arc};
 
-pub const MAX_RASTER_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_RASTER_BYTES: usize = 128 << 20; // 128 MiB
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Page {
@@ -46,8 +46,11 @@ impl Page {
         }
         let width = (width * scale).ceil();
         let height = (height * scale).ceil();
-        if width * height * 4.0 > MAX_RASTER_BYTES as f64 || width > 16384.0 || height > 16384.0 {
-            return Err("PDF page raster exceeds the 64 MiB limit. Reduce zoom.".into());
+        if width > 16384.0 || height > 16384.0 {
+            return Err("PDF page raster dimensions exceed 16384 pixels. Reduce zoom.".into());
+        }
+        if width * height * 4.0 > MAX_RASTER_BYTES as f64 {
+            return Err(format!("PDF page raster exceeds the {} MiB limit. Reduce zoom.", MAX_RASTER_BYTES >> 20));
         }
         Ok((width as usize, height as usize))
     }

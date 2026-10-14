@@ -12,7 +12,7 @@ description = "Bundled TeX resource locations and compatibility metadata"
 [dependencies]
 hex = { version = "0.4", default-features = false, features = ["std"] }
 dirs = {version = "7", default-features = false }
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "native-tls"] }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 sha2 = { version = "0.11", default-features = false, features = ["alloc", "oid"] }
