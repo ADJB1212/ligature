@@ -9,6 +9,7 @@ mod resources;
 mod search;
 mod semantics;
 mod session;
+mod settings;
 
 #[cfg(test)]
 mod tests;
@@ -39,6 +40,7 @@ actions!(
         New,
         Open,
         OpenProject,
+        OpenSettings,
         Save,
         SaveAs,
         ExportPdf,
@@ -76,6 +78,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(&format!("{modifier}-shift-e"), ExportPdf, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-w"), Close, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-q"), Quit, None),
+        KeyBinding::new(&format!("{modifier}-,"), OpenSettings, None),
+        KeyBinding::new(&format!("{modifier}-w"), Close, Some("LigatureSettings")),
+        KeyBinding::new(&format!("{modifier}-s"), Save, Some("LigatureSettings")),
+        KeyBinding::new("escape", Close, Some("LigatureSettings")),
         KeyBinding::new(&format!("{modifier}-shift-o"), OpenProject, Some("LigatureWorkspace")),
         KeyBinding::new("ctrl-tab", NextTab, Some("LigatureWorkspace")),
         KeyBinding::new("ctrl-shift-tab", PreviousTab, Some("LigatureWorkspace")),
@@ -143,6 +149,10 @@ pub struct Workspace {
     directories: BTreeMap<PathBuf, ligature_project::Directory>,
     expanded: BTreeSet<PathBuf>,
     settings: ligature_settings::Settings,
+    configuration: ligature_settings::Configuration,
+    configuration_path: Option<PathBuf>,
+    configuration_errors: Vec<String>,
+    settings_window: Option<gpui::WindowHandle<settings::SettingsView>>,
     settings_errors: Vec<String>,
     includes: ligature_project::IncludeGraph,
     project_task: Option<Task<()>>,
@@ -166,6 +176,16 @@ struct Tab {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let configuration_path = ligature_settings::Configuration::default_path();
+        let (configuration, configuration_errors) = configuration_path.as_ref().map_or_else(
+            || {
+                (
+                    ligature_settings::Configuration::default(),
+                    vec!["Set XDG_CONFIG_HOME or HOME to an absolute directory to save settings".into()],
+                )
+            },
+            |path| ligature_settings::Configuration::load(path),
+        );
         let editor = cx.new(|cx| Editor::new(Buffer::from_text(NEW_DOCUMENT), cx));
         let build_log = cx.new(|cx| {
             let mut log = Editor::read_only(Buffer::new(), cx);
@@ -216,8 +236,12 @@ impl Workspace {
             project_visible: true,
             directories: BTreeMap::new(),
             expanded: BTreeSet::new(),
-            settings: ligature_settings::Settings::default(),
-            settings_errors: Vec::new(),
+            settings: configuration.settings_for(None),
+            settings_errors: configuration_errors.clone(),
+            configuration,
+            configuration_path,
+            configuration_errors,
+            settings_window: None,
             includes: ligature_project::IncludeGraph::default(),
             project_task: None,
             session_path: None,
@@ -229,6 +253,7 @@ impl Workspace {
             semantic_ui: semantics::SemanticUi::default(),
             language_ui: language::LanguageUi::default(),
         };
+        workspace.apply_settings(cx);
         workspace.queue_semantics(cx);
         workspace.queue_language_server(window, cx);
         workspace
@@ -510,6 +535,7 @@ impl Render for Workspace {
                     .on_action(cx.listener(|this, _: &Close, window, cx| this.start(Intent::Close, window, cx)))
             })
             .on_action(cx.listener(|this, _: &Quit, window, cx| this.request_quit(window, cx)))
+            .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_settings(cx)))
             .when(!self.busy && self.preview.read(cx).pdf_snapshot().is_some(), |view| {
                 view.on_action(cx.listener(|this, _: &ExportPdf, window, cx| this.start(Intent::ExportPdf, window, cx)))
             })

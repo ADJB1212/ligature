@@ -18,7 +18,15 @@ fn workspace_with_template(cx: &mut TestAppContext) -> (WindowHandle<Workspace>,
     cx.update(init);
     let window = cx.add_window(Workspace::new);
     let root = window.root(cx).unwrap();
-    root.update(cx, |workspace, _| workspace.settings.language_server.enabled = false);
+    root.update(cx, |workspace, cx| {
+        workspace.configuration = ligature_settings::Configuration::default();
+        workspace.configuration.defaults.language_server.enabled = false;
+        workspace.settings = workspace.configuration.settings_for(None);
+        workspace.configuration_path = None;
+        workspace.configuration_errors.clear();
+        workspace.settings_errors.clear();
+        workspace.apply_settings(cx);
+    });
     cx.update_window(window.into(), |_, window, cx| {
         window.draw(cx).clear(cx);
     })
@@ -1157,13 +1165,22 @@ fn window_close_preserves_edits_to_a_tab_that_already_passed_confirmation() {
 }
 
 #[test]
-fn directory_picker_loads_settings_and_discovers_root_without_persisting_it() {
+fn directory_picker_uses_central_settings_and_ignores_project_local_configuration() {
     let directory = tempfile::tempdir().unwrap();
     let main = directory.path().join("main file.tex");
     fs::write(&main, "\\documentclass{article}\\input{missing}").unwrap();
-    fs::write(directory.path().join(ligature_settings::PROJECT_FILE), r#"{"indentation":{"width":2}}"#).unwrap();
+    fs::write(directory.path().join(".ligature.json"), r#"{"indentation":{"width":8}}"#).unwrap();
     let mut cx = TestAppContext::single();
     let (window, root) = workspace(&mut cx);
+    let config_path = directory.path().join("config/ligature/settings.json");
+    let project_path = fs::canonicalize(directory.path()).unwrap();
+    root.update(&mut cx, |workspace, _| {
+        let mut settings = workspace.configuration.defaults.clone();
+        settings.indentation.width = 2;
+        workspace.configuration.projects.insert(project_path, settings);
+        workspace.configuration.save(&config_path).unwrap();
+        workspace.configuration_path = Some(config_path.clone());
+    });
     start(&mut cx, window, Intent::OpenProject);
     cx.simulate_path_prompt_response(|options| {
         assert!(options.directories);
@@ -1179,9 +1196,13 @@ fn directory_picker_loads_settings_and_discovers_root_without_persisting_it() {
         assert!(!workspace.includes.errors.is_empty());
     });
     open(&mut cx, window, &main);
-    let (settings, errors) = ligature_settings::Settings::load(&directory.path().join(ligature_settings::PROJECT_FILE));
+    let (configuration, errors) = ligature_settings::Configuration::load(&config_path);
     assert!(errors.is_empty());
-    assert!(settings.root_document.is_none());
+    assert!(configuration.projects.values().all(|settings| settings.root_document.is_none()));
+    assert_eq!(
+        fs::read_to_string(directory.path().join(".ligature.json")).unwrap(),
+        r#"{"indentation":{"width":8}}"#
+    );
     root.read_with(&cx, |workspace, _| {
         assert!(workspace.project.as_ref().unwrap().documents.contains(Path::new("main file.tex")));
     });

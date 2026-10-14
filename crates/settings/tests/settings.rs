@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use ligature_settings::{BuildSettings, Indentation, PROJECT_FILE, SaveBeforeBuild, Session, Settings};
+use ligature_settings::{BuildSettings, Configuration, Indentation, SETTINGS_FILE, SaveBeforeBuild, Session, Settings};
 
 fn load(json: &str) -> (Settings, Vec<String>) {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join(PROJECT_FILE);
+    let path = directory.path().join(SETTINGS_FILE);
     std::fs::write(&path, json).unwrap();
     Settings::load(&path)
 }
@@ -30,7 +30,7 @@ fn language_settings_merge_defaults_and_round_trip_without_external_paths() {
     assert!(!settings.language_server.enabled && !settings.language_server.hover);
     assert!(settings.language_server.completion);
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join(PROJECT_FILE);
+    let path = directory.path().join(SETTINGS_FILE);
     settings.save(&path).unwrap();
     assert_eq!(Settings::load(&path), (settings, Vec::new()));
     assert!(!load(r#"{"language_server":{"executable":"external"}}"#).1.is_empty());
@@ -180,12 +180,12 @@ fn unknown_fields_and_wrong_types_fall_back_to_defaults_with_one_message_naming_
         "",
     ] {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join(PROJECT_FILE);
+        let path = directory.path().join(SETTINGS_FILE);
         std::fs::write(&path, json).unwrap();
         let (settings, errors) = Settings::load(&path);
         assert_eq!(settings, Settings::default(), "{json}");
         assert_eq!(errors.len(), 1, "{json}");
-        assert!(errors[0].contains(PROJECT_FILE), "{json}");
+        assert!(errors[0].contains(SETTINGS_FILE), "{json}");
     }
 }
 
@@ -205,7 +205,7 @@ fn unreadable_settings_report_an_error_instead_of_silently_defaulting() {
 #[test]
 fn saved_settings_round_trip_every_field() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join(PROJECT_FILE);
+    let path = directory.path().join(SETTINGS_FILE);
     let mut settings = Settings::default();
     settings.font.family = Some("Menlo".into());
     settings.font.size = 12.5;
@@ -227,7 +227,7 @@ fn saved_settings_round_trip_every_field() {
 #[test]
 fn saving_invalid_settings_fails_and_leaves_existing_files_untouched() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join(PROJECT_FILE);
+    let path = directory.path().join(SETTINGS_FILE);
     let invalid = Settings {
         root_document: Some("/abs.tex".into()),
         ..Settings::default()
@@ -241,9 +241,64 @@ fn saving_invalid_settings_fails_and_leaves_existing_files_untouched() {
 }
 
 #[test]
-fn saving_into_a_missing_directory_reports_an_error() {
+fn saving_creates_missing_configuration_directories() {
     let directory = tempfile::tempdir().unwrap();
-    assert!(Settings::default().save(&directory.path().join("missing/.ligature.json")).is_err());
+    let path = directory.path().join("missing/settings.json");
+    Settings::default().save(&path).unwrap();
+    assert_eq!(Settings::load(&path), (Settings::default(), Vec::new()));
+}
+
+#[test]
+fn central_configuration_round_trips_defaults_and_project_settings() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("project with spaces");
+    let mut configuration = Configuration::default();
+    configuration.defaults.font.size = 19.0;
+    let mut settings = configuration.settings_for(Some(&project));
+    settings.indentation.width = 2;
+    settings.root_document = Some("main.tex".into());
+    configuration.projects.insert(project.clone(), settings.clone());
+    let path = directory.path().join("config/ligature/settings.json");
+    configuration.save(&path).unwrap();
+    assert_eq!(Configuration::load(&path), (configuration.clone(), Vec::new()));
+    assert_eq!(configuration.settings_for(Some(&project)), settings);
+    assert_eq!(configuration.settings_for(Some(&directory.path().join("other"))), configuration.defaults);
+    configuration.projects.remove(&project);
+    assert_eq!(configuration.settings_for(Some(&project)), configuration.defaults);
+    assert!(!project.exists());
+}
+
+#[test]
+fn invalid_central_configuration_does_not_overwrite_existing_settings() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join(SETTINGS_FILE);
+    let mut configuration = Configuration::default();
+    configuration.save(&path).unwrap();
+    configuration.defaults.root_document = Some("main.tex".into());
+    assert!(configuration.save(&path).is_err());
+    assert_eq!(Configuration::load(&path), (Configuration::default(), Vec::new()));
+    configuration.defaults.root_document = None;
+    configuration.projects.insert("relative/project".into(), Settings::default());
+    assert!(configuration.save(&path).is_err());
+}
+
+#[test]
+fn central_configuration_reports_invalid_values_and_preserves_valid_neighbors() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join(SETTINGS_FILE);
+    std::fs::write(&path, r#"{"defaults":{"font":{"size":1},"indentation":{"width":2}},"projects":{"/project":{"build":{"reruns":99,"keep_logs":false}},"relative":{}}}"#).unwrap();
+    let (configuration, errors) = Configuration::load(&path);
+    assert_eq!(errors.len(), 3);
+    assert_eq!(configuration.defaults.font.size, 15.0);
+    assert_eq!(configuration.defaults.indentation.width, 2);
+    assert_eq!(configuration.projects.len(), 1);
+    assert_eq!(configuration.projects[Path::new("/project")].build.reruns, None);
+    assert!(!configuration.projects[Path::new("/project")].build.keep_logs);
+    std::fs::write(&path, "{broken").unwrap();
+    let (configuration, errors) = Configuration::load(&path);
+    assert_eq!(configuration, Configuration::default());
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].contains(SETTINGS_FILE));
 }
 
 #[test]

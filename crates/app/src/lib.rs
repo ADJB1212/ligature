@@ -4,8 +4,8 @@ use gpui::{App, Bounds, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOpt
 use ligature_core::APP_NAME;
 use ligature_workspace::{
     Build, CancelBuild, Close, ExportPdf, Find, FindInProject, FindNext, FindPrevious, FitPage, FitWidth, GoToDefinition, New, NextTab, Open,
-    OpenProject, PreviousTab, Quit, Replace, RestartLanguageServer, Save, SaveAs, ShowInPreview, ToggleBuildOutput, ToggleLanguageServer,
-    ToggleOutline, ToggleProject, ToggleTexResources, Workspace, ZoomIn, ZoomOut,
+    OpenProject, OpenSettings, PreviousTab, Quit, Replace, RestartLanguageServer, Save, SaveAs, ShowInPreview, ToggleBuildOutput,
+    ToggleLanguageServer, ToggleOutline, ToggleProject, ToggleTexResources, Workspace, ZoomIn, ZoomOut,
 };
 
 /// Start the native event loop and open the workspace window.
@@ -15,14 +15,21 @@ pub fn run() {
         ligature_editor::init(cx);
         ligature_workspace::init(cx);
         cx.on_action(|_: &Quit, cx| {
-            if let Some(window) = cx.windows().first().and_then(|window| window.downcast::<Workspace>()) {
+            if let Some(window) = cx.windows().into_iter().find_map(|window| window.downcast::<Workspace>()) {
                 window.update(cx, |workspace, window, cx| workspace.request_quit(window, cx)).ok();
             } else {
                 cx.quit();
             }
         });
+        cx.on_action(|_: &OpenSettings, cx| {
+            if let Some(window) = cx.windows().into_iter().find_map(|window| window.downcast::<Workspace>()) {
+                window.update(cx, |workspace, _, cx| workspace.open_settings(cx)).ok();
+            }
+        });
         cx.set_menus(vec![
             Menu::new(APP_NAME).items([
+                MenuItem::action("Settings...", OpenSettings),
+                MenuItem::separator(),
                 MenuItem::action("TeX Resources...", ToggleTexResources),
                 MenuItem::separator(),
                 MenuItem::action("Quit Ligature", Quit),

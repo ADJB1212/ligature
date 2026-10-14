@@ -1,9 +1,13 @@
-//! Typed project configuration and workspace session persistence.
+//! Typed application and project configuration and workspace session persistence.
 
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    ffi::OsStr,
+    path::{Path, PathBuf},
+};
 
-pub const PROJECT_FILE: &str = ".ligature.json";
+pub const SETTINGS_FILE: &str = "settings.json";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -213,6 +217,78 @@ fn relative_path(path: &Path) -> bool {
             .all(|part| matches!(part, std::path::Component::Normal(_) | std::path::Component::CurDir))
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Configuration {
+    pub defaults: Settings,
+    pub projects: BTreeMap<PathBuf, Settings>,
+}
+
+impl Configuration {
+    pub fn settings_for(&self, project: Option<&Path>) -> Settings {
+        project.and_then(|path| self.projects.get(path)).unwrap_or(&self.defaults).clone()
+    }
+
+    pub fn default_path() -> Option<PathBuf> {
+        config_directory().map(|directory| directory.join(SETTINGS_FILE))
+    }
+
+    pub fn load(path: &Path) -> (Self, Vec<String>) {
+        let text = match ligature_fs::read(path) {
+            Ok(file) => file.text,
+            Err(_) if matches!(path.try_exists(), Ok(false)) => return (Self::default(), Vec::new()),
+            Err(error) => return (Self::default(), vec![error.to_string()]),
+        };
+        let mut configuration: Self = match serde_json::from_str(&text) {
+            Ok(configuration) => configuration,
+            Err(error) => {
+                return (
+                    Self::default(),
+                    vec![format!("Invalid settings in '{}': {error}; using defaults", path.display())],
+                );
+            }
+        };
+        let errors = configuration.validate();
+        (configuration, errors)
+    }
+
+    fn validate(&mut self) -> Vec<String> {
+        let mut errors = self.defaults.validate();
+        if self.defaults.root_document.take().is_some() {
+            errors.push("The main document must be configured for a project".into());
+        }
+        self.projects.retain(|path, settings| {
+            if !path.is_absolute() {
+                errors.push(format!("Project '{}' must have an absolute path; ignoring it", path.display()));
+                return false;
+            }
+            errors.extend(settings.validate().into_iter().map(|error| format!("{}: {error}", path.display())));
+            true
+        });
+        errors
+    }
+
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        let mut configuration = self.clone();
+        let errors = configuration.validate();
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+        persist(path, self)
+    }
+}
+
+pub fn config_directory() -> Option<PathBuf> {
+    config_directory_from(std::env::var_os("XDG_CONFIG_HOME").as_deref(), std::env::var_os("HOME").as_deref())
+}
+
+fn config_directory_from(xdg: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
+    xdg.map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| home.map(PathBuf::from).filter(|path| path.is_absolute()).map(|path| path.join(".config")))
+        .map(|path| path.join("ligature"))
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Session {
@@ -229,20 +305,17 @@ impl Session {
         serde_json::from_str(&file.text).map_err(|error| format!("Invalid session: {error}"))
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
         persist(path, self)
     }
     pub fn default_path() -> Option<PathBuf> {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-            .map(|root| root.join("ligature/session.json"))
+        config_directory().map(|root| root.join("session.json"))
     }
 }
 fn persist(path: &Path, value: &impl Serialize) -> Result<(), String> {
     let text = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
     ligature_fs::write_atomic(path, &text).map(|_| ()).map_err(|error| error.to_string())
 }
 
@@ -250,9 +323,24 @@ fn persist(path: &Path, value: &impl Serialize) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
+    fn config_paths_use_absolute_xdg_or_home_config_and_never_the_working_directory() {
+        assert_eq!(
+            config_directory_from(Some(OsStr::new("/config")), Some(OsStr::new("/home/user"))),
+            Some("/config/ligature".into())
+        );
+        for xdg in [None, Some(OsStr::new("")), Some(OsStr::new("relative"))] {
+            assert_eq!(
+                config_directory_from(xdg, Some(OsStr::new("/home/user"))),
+                Some("/home/user/.config/ligature".into())
+            );
+            assert_eq!(config_directory_from(xdg, None), None);
+        }
+        assert_eq!(config_directory_from(None, Some(OsStr::new("relative"))), None);
+    }
+    #[test]
     fn overrides_merge_with_defaults_and_invalid_values_fall_back() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join(PROJECT_FILE);
+        let path = directory.path().join(SETTINGS_FILE);
         std::fs::write(&path, r#"{"font":{"size":20},"indentation":{"width":0},"build":{"reruns":11}}"#).unwrap();
         let (settings, errors) = Settings::load(&path);
         assert_eq!(settings.font.size, 20.0);
@@ -266,7 +354,7 @@ mod tests {
     #[test]
     fn settings_and_session_round_trip_paths_with_spaces() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join(PROJECT_FILE);
+        let path = directory.path().join(SETTINGS_FILE);
         let settings = Settings {
             root_document: Some("chapter one/main.tex".into()),
             ..Settings::default()

@@ -279,6 +279,9 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
                     if matches!(intent, Intent::Quit) {
                         cx.quit();
                     } else {
+                        if let Some(settings) = workspace.settings_window.take() {
+                            settings.update(cx, |_, window, _| window.remove_window()).ok();
+                        }
                         window.remove_window();
                     }
                     Ok(())

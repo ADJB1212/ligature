@@ -792,7 +792,7 @@ mod tests {
         cx.run_until_parked();
         assert!(completed.get());
         assert!(!cx.did_prompt_for_new_path());
-        assert!(!directory.path().join(ligature_settings::PROJECT_FILE).exists());
+        assert!(!directory.path().join(".ligature.json").exists());
         root.read_with(&cx, |workspace, _| {
             assert_eq!(
                 workspace.project.as_ref().unwrap().root_document.as_deref(),

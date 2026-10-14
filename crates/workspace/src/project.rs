@@ -6,7 +6,7 @@ use std::{
 
 use gpui::{AsyncWindowContext, Context, IntoElement, PathPromptOptions, WeakEntity, Window, div, prelude::*, px};
 use ligature_project::{IncludeGraph, Project};
-use ligature_settings::{PROJECT_FILE, Settings};
+use ligature_settings::Settings;
 use ligature_theme::{colors, spacing};
 use ligature_ui::{Button, caption, inline_error, panel_header};
 
@@ -33,11 +33,18 @@ pub(super) async fn open_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWin
 }
 
 pub(super) async fn load_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, path: PathBuf) -> Result<(), String> {
+    let (configuration, configuration_errors) = this
+        .update_in(cx, |workspace, _, _| {
+            (workspace.configuration.clone(), workspace.configuration_errors.clone())
+        })
+        .map_err(|error| error.to_string())?;
+    let expected_configuration = configuration.clone();
     let (project, settings, errors) = cx
         .background_executor()
         .spawn(async move {
             let mut project = Project::open(&path)?;
-            let (mut settings, mut errors) = Settings::load(&project.root.join(PROJECT_FILE));
+            let mut settings = configuration.settings_for(Some(&project.root));
+            let mut errors = configuration_errors;
             errors.extend(discover_root(&mut project, &mut settings, None, &BTreeMap::new()));
             Ok::<_, String>((project, settings, errors))
         })
@@ -51,10 +58,17 @@ pub(super) async fn load_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWin
         workspace.directories.clear();
         workspace.expanded.insert(project.root.clone());
         workspace.project = Some(project);
-        workspace.settings = settings;
+        if workspace.configuration == expected_configuration {
+            workspace.settings = settings;
+            workspace.settings_errors = errors;
+        } else {
+            workspace.settings = workspace
+                .configuration
+                .settings_for(workspace.project.as_ref().map(|project| project.root.as_path()));
+            workspace.settings_errors.clone_from(&workspace.configuration_errors);
+        }
         workspace.apply_settings(cx);
         workspace.update_membership();
-        workspace.settings_errors = errors;
         workspace.start_project_refresh(window, cx);
         workspace.search.preview = None;
         workspace.queue_project_search(cx);
@@ -142,7 +156,7 @@ impl Workspace {
         }
     }
 
-    fn start_project_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn start_project_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.project_task = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
                 let snapshot = this.update_in(cx, |workspace, _, cx| {
@@ -154,19 +168,30 @@ impl Workspace {
                         workspace.document.as_ref().and_then(|document| document.path.clone()),
                         workspace.build_ui.successful_artifacts(),
                         workspace.build_ui.diagnostic_snapshot(),
+                        workspace.settings.clone(),
+                        workspace.configuration_errors.clone(),
                     ))
                 });
-                let Ok(Some((mut project, expanded, text, active, artifacts, (diagnostic_id, diagnostic_sources, diagnostic_paths)))) = snapshot
+                let Ok(Some((
+                    mut project,
+                    expanded,
+                    text,
+                    active,
+                    artifacts,
+                    (diagnostic_id, diagnostic_sources, diagnostic_paths),
+                    mut settings,
+                    mut errors,
+                ))) = snapshot
                 else {
                     break;
                 };
                 let root = project.root.clone();
                 let expected_root = root.clone();
                 let expected_active = active.clone();
+                let expected_settings = settings.clone();
                 let (directories, graph, root_document, settings, errors, stale_pdf, stale_diagnostics) = cx
                     .background_executor()
                     .spawn(async move {
-                        let (mut settings, mut errors) = Settings::load(&root.join(PROJECT_FILE));
                         errors.extend(discover_root(&mut project, &mut settings, active.as_deref(), &text));
                         let output = root.join(&settings.build.output_directory);
                         let directories: BTreeMap<_, _> = expanded
@@ -202,6 +227,7 @@ impl Workspace {
                     .update_in(cx, |workspace, _, cx| {
                         if workspace.project.as_ref().is_none_or(|project| project.root != expected_root)
                             || workspace.document.as_ref().and_then(|document| document.path.as_ref()) != expected_active.as_ref()
+                            || workspace.settings != expected_settings
                         {
                             return;
                         }
