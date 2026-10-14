@@ -4,7 +4,7 @@ use gpui::{App, Bounds, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOpt
 use ligature_core::APP_NAME;
 use ligature_workspace::{
     Build, CancelBuild, Close, ExportPdf, Find, FindInProject, FindNext, FindPrevious, FitPage, FitWidth, GoToDefinition, New, NextTab, Open,
-    OpenProject, PreviousTab, Quit, Replace, RestartLanguageServer, Save, SaveAs, SelectRoot, ShowInPreview, ToggleBuildOutput, ToggleLanguageServer,
+    OpenProject, PreviousTab, Quit, Replace, RestartLanguageServer, Save, SaveAs, ShowInPreview, ToggleBuildOutput, ToggleLanguageServer,
     ToggleOutline, ToggleProject, ToggleTexResources, Workspace, ZoomIn, ZoomOut,
 };
 
@@ -71,12 +71,7 @@ pub fn run() {
                 MenuItem::action("Language Server Status", ToggleLanguageServer),
                 MenuItem::action("Restart Language Server", RestartLanguageServer),
             ]),
-            Menu::new("Build").items([
-                MenuItem::action("Build Document", Build),
-                MenuItem::action("Cancel Build", CancelBuild),
-                MenuItem::separator(),
-                MenuItem::action("Set Active Document as Project Root", SelectRoot),
-            ]),
+            Menu::new("Build").items([MenuItem::action("Build Document", Build), MenuItem::action("Cancel Build", CancelBuild)]),
             Menu::new("Navigate").items([
                 MenuItem::action("Go to Definition", GoToDefinition),
                 MenuItem::action("Show Hover", ligature_editor::ShowHover),

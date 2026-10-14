@@ -4,7 +4,7 @@ use gpui::{AppContext, Entity, TestAppContext, WindowHandle};
 
 use super::*;
 
-fn workspace(cx: &mut TestAppContext) -> (WindowHandle<Workspace>, Entity<Workspace>) {
+pub(super) fn workspace(cx: &mut TestAppContext) -> (WindowHandle<Workspace>, Entity<Workspace>) {
     let (window, root) = workspace_with_template(cx);
     root.update(cx, |workspace, cx| {
         workspace
@@ -339,7 +339,7 @@ fn start(cx: &mut TestAppContext, window: WindowHandle<Workspace>, intent: Inten
     cx.run_until_parked();
 }
 
-fn type_text(cx: &mut TestAppContext, root: &Entity<Workspace>, text: &str) {
+pub(super) fn type_text(cx: &mut TestAppContext, root: &Entity<Workspace>, text: &str) {
     root.update(cx, |workspace, cx| {
         workspace
             .editor
@@ -351,7 +351,7 @@ fn text(cx: &TestAppContext, root: &Entity<Workspace>) -> String {
     root.read_with(cx, |workspace, cx| workspace.editor.read(cx).state().text().to_owned())
 }
 
-fn open(cx: &mut TestAppContext, window: WindowHandle<Workspace>, path: &Path) {
+pub(super) fn open(cx: &mut TestAppContext, window: WindowHandle<Workspace>, path: &Path) {
     start(cx, window, Intent::Open);
     assert!(cx.did_prompt_for_paths());
     cx.simulate_path_prompt_response(|options| {
@@ -1157,10 +1157,10 @@ fn window_close_preserves_edits_to_a_tab_that_already_passed_confirmation() {
 }
 
 #[test]
-fn directory_picker_loads_project_settings_and_persists_root_selection() {
+fn directory_picker_loads_settings_and_discovers_root_without_persisting_it() {
     let directory = tempfile::tempdir().unwrap();
     let main = directory.path().join("main file.tex");
-    fs::write(&main, "\\input{missing}").unwrap();
+    fs::write(&main, "\\documentclass{article}\\input{missing}").unwrap();
     fs::write(directory.path().join(ligature_settings::PROJECT_FILE), r#"{"indentation":{"width":2}}"#).unwrap();
     let mut cx = TestAppContext::single();
     let (window, root) = workspace(&mut cx);
@@ -1175,12 +1175,13 @@ fn directory_picker_loads_project_settings_and_persists_root_selection() {
         let project = workspace.project.as_ref().unwrap();
         assert_eq!(workspace.settings.indentation.width, 2);
         assert!(workspace.directories[&project.root].error.is_none());
+        assert_eq!(project.root_document.as_deref(), Some(Path::new("main file.tex")));
+        assert!(!workspace.includes.errors.is_empty());
     });
     open(&mut cx, window, &main);
-    start(&mut cx, window, Intent::SelectRoot);
     let (settings, errors) = ligature_settings::Settings::load(&directory.path().join(ligature_settings::PROJECT_FILE));
     assert!(errors.is_empty());
-    assert_eq!(settings.root_document, Some("main file.tex".into()));
+    assert!(settings.root_document.is_none());
     root.read_with(&cx, |workspace, _| {
         assert!(workspace.project.as_ref().unwrap().documents.contains(Path::new("main file.tex")));
     });
@@ -1252,7 +1253,7 @@ fn includes_follow_unsaved_text_in_inactive_tabs_and_keyboard_cycles_tabs() {
     let directory = tempfile::tempdir().unwrap();
     let main = directory.path().join("main.tex");
     let chapter = directory.path().join("chapter.tex");
-    fs::write(&main, "\\input{chapter}").unwrap();
+    fs::write(&main, "\\documentclass{article}\\input{chapter}").unwrap();
     fs::write(&chapter, "chapter").unwrap();
     let mut cx = TestAppContext::single();
     let (window, root) = workspace(&mut cx);
@@ -1260,7 +1261,6 @@ fn includes_follow_unsaved_text_in_inactive_tabs_and_keyboard_cycles_tabs() {
     cx.simulate_path_prompt_response(|_| Some(vec![directory.path().to_owned()]));
     cx.run_until_parked();
     open(&mut cx, window, &main);
-    start(&mut cx, window, Intent::SelectRoot);
     type_text(&mut cx, &root, "\\input{missing}\n");
     open(&mut cx, window, &chapter);
     cx.executor().advance_clock(std::time::Duration::from_secs(1));

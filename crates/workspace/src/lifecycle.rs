@@ -24,7 +24,6 @@ pub(super) enum Intent {
         query: ligature_search::Query,
     },
     OpenProject,
-    SelectRoot,
     Restore,
     Save,
     SaveAs,
@@ -292,7 +291,6 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
         }
         Intent::CheckExternal => check_external(this, cx).await?,
         Intent::OpenProject => super::project::open_project(this, cx).await?,
-        Intent::SelectRoot => super::project::select_root(this, cx).await?,
         Intent::Restore => super::session::restore(this, cx).await?,
         Intent::Build => super::builds::prepare(this, cx).await?,
         Intent::ExportPdf => super::export::export_pdf(this, cx).await?,

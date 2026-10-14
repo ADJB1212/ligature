@@ -46,7 +46,6 @@ actions!(
         Quit,
         NextTab,
         PreviousTab,
-        SelectRoot,
         Find,
         FindNext,
         FindPrevious,
@@ -505,10 +504,6 @@ impl Render for Workspace {
                 view.on_action(cx.listener(|this, _: &NextTab, window, cx| this.cycle_tab(false, window, cx)))
                     .on_action(cx.listener(|this, _: &PreviousTab, window, cx| this.cycle_tab(true, window, cx)))
             })
-            .when(
-                !unavailable && self.project.is_some() && self.document.as_ref().is_some_and(|document| document.path.is_some()),
-                |view| view.on_action(cx.listener(|this, _: &SelectRoot, window, cx| this.start(Intent::SelectRoot, window, cx))),
-            )
             .when(!unavailable, |view| {
                 view.on_action(cx.listener(|this, _: &Save, window, cx| this.start(Intent::Save, window, cx)))
                     .on_action(cx.listener(|this, _: &SaveAs, window, cx| this.start(Intent::SaveAs, window, cx)))
@@ -703,7 +698,7 @@ impl Workspace {
                         Button::new("build", "Build")
                             .filled()
                             .tooltip(if !self.can_build() {
-                                "Open a project folder to build a saved document."
+                                "Open a TeX document to build."
                             } else if cfg!(target_os = "macos") {
                                 "Build document (Cmd+B)"
                             } else {

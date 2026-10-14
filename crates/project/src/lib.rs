@@ -1,5 +1,6 @@
-//! TeX project membership, root-document selection, and relationships between project files.
+//! TeX project membership, root-document discovery, and relationships between project files.
 
+mod roots;
 mod semantics;
 
 pub use semantics::{Location, OutlineEntry, SemanticIndex, Source};

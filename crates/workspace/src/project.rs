@@ -38,12 +38,7 @@ pub(super) async fn load_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWin
         .spawn(async move {
             let mut project = Project::open(&path)?;
             let (mut settings, mut errors) = Settings::load(&project.root.join(PROJECT_FILE));
-            if let Some(root) = &settings.root_document
-                && let Err(error) = project.set_root_document(root)
-            {
-                errors.push(error);
-                settings.root_document = None;
-            }
+            errors.extend(discover_root(&mut project, &mut settings, None, &BTreeMap::new()));
             Ok::<_, String>((project, settings, errors))
         })
         .await?;
@@ -69,40 +64,37 @@ pub(super) async fn load_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWin
     Ok(())
 }
 
-pub(super) async fn select_root(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext) -> Result<(), String> {
-    let snapshot = this
-        .update_in(cx, |workspace, _, _| {
-            Some((
-                workspace.project.clone()?,
-                workspace.settings.clone(),
-                workspace.document.as_ref()?.path.clone()?,
-            ))
-        })
-        .map_err(|error| error.to_string())?;
-    let Some((mut project, mut settings, path)) = snapshot else {
-        return Err("Open a project and save a TeX document before selecting its root".into());
-    };
-    let (project, settings) = cx
-        .background_executor()
-        .spawn(async move {
-            project.set_root_document(&path)?;
-            settings.root_document.clone_from(&project.root_document);
-            settings.save(&project.root.join(PROJECT_FILE))?;
-            Ok::<_, String>((project, settings))
-        })
-        .await?;
-    this.update_in(cx, |workspace, window, cx| {
-        workspace.project = Some(project);
-        workspace.settings = settings;
-        workspace.update_membership();
-        workspace.start_project_refresh(window, cx);
-        cx.notify();
-    })
-    .map_err(|error| error.to_string())?;
-    Ok(())
+pub(super) fn discover_root(project: &mut Project, settings: &mut Settings, active: Option<&Path>, text: &BTreeMap<PathBuf, String>) -> Vec<String> {
+    project.root_document = None;
+    let mut errors = Vec::new();
+    if let Some(root) = &settings.root_document
+        && let Err(error) = project.set_root_document(root)
+    {
+        errors.push(error);
+        settings.root_document = None;
+    }
+    project.discover_root_document(&project.root.join(&settings.build.output_directory), active, |path| {
+        text.get(path)
+            .cloned()
+            .map_or_else(|| ligature_fs::read(path).map(|file| file.text).map_err(|error| error.to_string()), Ok)
+    });
+    errors
 }
 
 impl Workspace {
+    pub(super) fn project_text(&self, cx: &gpui::App) -> BTreeMap<PathBuf, String> {
+        let mut text = BTreeMap::new();
+        if let Some(path) = self.document.as_ref().and_then(|document| document.path.as_ref()) {
+            text.insert(path.clone(), self.editor.read(cx).state().text().to_owned());
+        }
+        for tab in self.tabs.iter().flatten() {
+            if let Some(path) = &tab.document.path {
+                text.insert(path.clone(), tab.editor.read(cx).state().text().to_owned());
+            }
+        }
+        text
+    }
+
     pub(super) fn apply_settings(&mut self, cx: &mut Context<Self>) {
         self.configure_active_editor(cx);
         for tab in self.tabs.iter().flatten() {
@@ -155,38 +147,27 @@ impl Workspace {
             loop {
                 let snapshot = this.update_in(cx, |workspace, _, cx| {
                     let project = workspace.project.as_ref()?;
-                    let mut text = BTreeMap::new();
-                    if let Some(path) = workspace.document.as_ref().and_then(|document| document.path.as_ref()) {
-                        text.insert(path.clone(), workspace.editor.read(cx).state().text().to_owned());
-                    }
-                    for tab in workspace.tabs.iter().flatten() {
-                        if let Some(path) = &tab.document.path {
-                            text.insert(path.clone(), tab.editor.read(cx).state().text().to_owned());
-                        }
-                    }
                     Some((
                         project.clone(),
                         workspace.expanded.clone(),
-                        text,
+                        workspace.project_text(cx),
+                        workspace.document.as_ref().and_then(|document| document.path.clone()),
                         workspace.build_ui.successful_artifacts(),
                         workspace.build_ui.diagnostic_snapshot(),
                     ))
                 });
-                let Ok(Some((mut project, expanded, text, artifacts, (diagnostic_id, diagnostic_sources, diagnostic_paths)))) = snapshot else {
+                let Ok(Some((mut project, expanded, text, active, artifacts, (diagnostic_id, diagnostic_sources, diagnostic_paths)))) = snapshot
+                else {
                     break;
                 };
                 let root = project.root.clone();
                 let expected_root = root.clone();
-                let (directories, graph, settings, errors, stale_pdf, stale_diagnostics) = cx
+                let expected_active = active.clone();
+                let (directories, graph, root_document, settings, errors, stale_pdf, stale_diagnostics) = cx
                     .background_executor()
                     .spawn(async move {
                         let (mut settings, mut errors) = Settings::load(&root.join(PROJECT_FILE));
-                        if let Some(path) = &settings.root_document
-                            && let Err(error) = project.set_root_document(path)
-                        {
-                            errors.push(error);
-                            settings.root_document = None;
-                        }
+                        errors.extend(discover_root(&mut project, &mut settings, active.as_deref(), &text));
                         let output = root.join(&settings.build.output_directory);
                         let directories: BTreeMap<_, _> = expanded
                             .into_iter()
@@ -195,7 +176,7 @@ impl Workspace {
                                 (path, directory)
                             })
                             .collect();
-                        let graph = settings.root_document.as_ref().map_or_else(IncludeGraph::default, |path| {
+                        let graph = project.root_document.as_ref().map_or_else(IncludeGraph::default, |path| {
                             IncludeGraph::load_with(&root.join(path), |path| {
                                 text.get(path)
                                     .cloned()
@@ -214,16 +195,19 @@ impl Workspace {
                                     .is_none_or(|sources| std::fs::read_to_string(path).ok().is_none_or(|text| !sources.matches_text(path, &text)))
                             })
                             .collect();
-                        (directories, graph, settings, errors, stale_pdf, stale_diagnostics)
+                        (directories, graph, project.root_document, settings, errors, stale_pdf, stale_diagnostics)
                     })
                     .await;
                 if this
                     .update_in(cx, |workspace, _, cx| {
-                        if workspace.project.as_ref().is_none_or(|project| project.root != expected_root) {
+                        if workspace.project.as_ref().is_none_or(|project| project.root != expected_root)
+                            || workspace.document.as_ref().and_then(|document| document.path.as_ref()) != expected_active.as_ref()
+                        {
                             return;
                         }
                         let changed = workspace.directories != directories
                             || workspace.includes != graph
+                            || workspace.project.as_ref().is_some_and(|project| project.root_document != root_document)
                             || workspace.settings != settings
                             || workspace.settings_errors != errors;
                         if workspace.settings != settings {
@@ -233,7 +217,7 @@ impl Workspace {
                             workspace.queue_project_search(cx);
                         }
                         if let Some(project) = &mut workspace.project {
-                            project.root_document.clone_from(&workspace.settings.root_document);
+                            project.root_document = root_document;
                         }
                         let mut directories = directories;
                         for (path, directory) in &mut directories {

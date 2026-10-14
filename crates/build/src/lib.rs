@@ -84,7 +84,7 @@ impl BuildRequest {
         if !errors.is_empty() {
             return Err(errors.join("; "));
         }
-        let project = validated_project(project)?;
+        let project = validated_project(project, &settings.output_directory)?;
         let root_document = project.root.join(project.root_document.as_ref().unwrap());
         if root_document.file_name().and_then(|name| name.to_str()).is_none() {
             return Err("The root document filename must be UTF-8".into());
@@ -228,10 +228,18 @@ fn missing_package(diagnostics: &str) -> Option<String> {
     }
 }
 
-fn validated_project(project: &Project) -> Result<Project, String> {
-    let root = project.root_document.as_ref().ok_or("Select a root TeX document before building")?;
+fn validated_project(project: &Project, output_directory: &Path) -> Result<Project, String> {
     let mut validated = Project::open(&project.root)?;
-    validated.set_root_document(root)?;
+    if let Some(root) = &project.root_document {
+        validated.set_root_document(root)?;
+    } else {
+        validated.discover_root_document(&validated.root.join(output_directory), None, |path| {
+            std::fs::read_to_string(path).map_err(|error| error.to_string())
+        });
+        if validated.root_document.is_none() {
+            return Err("No main TeX document found. Add a TeX file containing \\documentclass.".into());
+        }
+    }
     Ok(validated)
 }
 
@@ -282,6 +290,17 @@ mod tests {
         assert!(request.options().synctex && request.options().keep_logs);
         assert_eq!(std::env::current_dir().unwrap(), cwd);
         assert!(!request.output_directory().exists());
+    }
+
+    #[test]
+    fn build_requests_discover_a_main_document_without_a_selected_root() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("main.tex"), "\\documentclass{article}\\input{chapter}").unwrap();
+        std::fs::write(directory.path().join("chapter.tex"), "chapter").unwrap();
+        let project = Project::open(directory.path()).unwrap();
+        let request = ready(&project, &BuildSettings::default());
+        assert_eq!(request.root_document(), project.root.join("main.tex"));
+        assert!(project.root_document.is_none());
     }
 
     #[test]

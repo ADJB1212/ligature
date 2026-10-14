@@ -142,7 +142,13 @@ impl Workspace {
     }
 
     pub(super) fn can_build(&self) -> bool {
-        self.project.is_some() || self.document.as_ref().is_some_and(|document| document.path.is_none())
+        self.project.is_some()
+            || self.document.as_ref().is_some_and(|document| {
+                document
+                    .path
+                    .as_ref()
+                    .is_none_or(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("tex")))
+            })
     }
 
     fn diagnostic_matches(&self, diagnostic: &Diagnostic, path: Option<&std::path::PathBuf>, id: DocumentId) -> bool {
@@ -648,12 +654,7 @@ pub(super) async fn prepare(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowCo
         .map_err(|error| error.to_string())?;
         return Ok(());
     }
-    let preparation = this
-        .update_in(cx, |workspace, _, cx| {
-            let project = workspace.project.as_ref().ok_or("Open a project before building")?;
-            BuildRequest::prepare(project, &workspace.settings.build, &workspace.dirty_project_paths(cx))
-        })
-        .map_err(|error| error.to_string())??;
+    let preparation = prepare_project(this, cx).await?;
     if let BuildPreparation::SaveRequired(paths) = preparation {
         let original = this
             .update_in(cx, |workspace, _, _| workspace.active_tab)
@@ -663,28 +664,60 @@ pub(super) async fn prepare(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowCo
             .map_err(|error| error.to_string())?;
         result?;
     }
-    let (project, settings, dirty) = this
+    let request = match prepare_project(this, cx).await? {
+        BuildPreparation::Ready(request) => request,
+        BuildPreparation::SaveRequired(_) => return Err("Project documents changed while saving. Save them and build again.".into()),
+    };
+    this.update_in(cx, |workspace, window, cx| workspace.launch_build(request, window, cx))
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn prepare_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext) -> Result<BuildPreparation, String> {
+    let folder = this
+        .update_in(cx, |workspace, _, _| {
+            if workspace.project.is_some() {
+                return None;
+            }
+            workspace.document.as_ref()?.path.as_ref()?.parent().map(std::path::Path::to_owned)
+        })
+        .map_err(|error| error.to_string())?;
+    if let Some(folder) = folder {
+        super::project::load_project(this, cx, folder).await?;
+    }
+    let (project, settings, active, text, dirty) = this
         .update_in(cx, |workspace, _, cx| {
             (
                 workspace.project.clone(),
-                workspace.settings.build.clone(),
+                workspace.settings.clone(),
+                workspace.document.as_ref().and_then(|document| document.path.clone()),
+                workspace.project_text(cx),
                 workspace.dirty_project_paths(cx),
             )
         })
         .map_err(|error| error.to_string())?;
-    let request = cx
+    let (project, preparation) = cx
         .background_executor()
         .spawn(async move {
-            let project = project.ok_or("The project closed before building")?;
-            match BuildRequest::prepare(&project, &settings, &dirty)? {
-                BuildPreparation::Ready(request) => Ok::<_, String>(request),
-                BuildPreparation::SaveRequired(_) => Err("Project documents changed while saving. Save them and build again.".into()),
-            }
+            let mut project = project.ok_or("Open a TeX document before building")?;
+            let mut settings = settings;
+            super::project::discover_root(&mut project, &mut settings, active.as_deref(), &text);
+            let preparation = BuildRequest::prepare(&project, &settings.build, &dirty)?;
+            Ok::<_, String>((project, preparation))
         })
         .await?;
-    this.update_in(cx, |workspace, window, cx| workspace.launch_build(request, window, cx))
-        .map_err(|error| error.to_string())?;
-    Ok(())
+    this.update_in(cx, |workspace, _, cx| {
+        let current = workspace
+            .project
+            .as_mut()
+            .filter(|current| current.root == project.root)
+            .ok_or("The project changed before building")?;
+        current.root_document = project.root_document;
+        cx.notify();
+        Ok::<_, String>(())
+    })
+    .map_err(|error| error.to_string())??;
+    Ok(preparation)
 }
 
 async fn save_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, paths: &[PathBuf]) -> Result<(), String> {
@@ -727,6 +760,83 @@ pub(super) async fn shutdown(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowC
 mod tests {
     use super::*;
     use gpui::{AppContext, TestAppContext};
+
+    #[test]
+    fn saved_standalone_build_preparation_opens_its_folder_without_a_picker() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("article.tex");
+        std::fs::write(&path, "\\documentclass{article}\\begin{document}Text\\end{document}").unwrap();
+        let mut cx = TestAppContext::single();
+        let (window, root) = crate::tests::workspace(&mut cx);
+        crate::tests::open(&mut cx, window, &path);
+        root.read_with(&cx, |workspace, _| {
+            assert!(workspace.project.is_none());
+            assert!(workspace.can_build());
+        });
+        let completed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let result = std::rc::Rc::clone(&completed);
+        let expected = std::fs::canonicalize(&path).unwrap();
+        cx.update_window(window.into(), |_, window, cx| {
+            root.update(cx, |_, cx| {
+                cx.spawn_in(window, async move |this, cx| {
+                    let BuildPreparation::Ready(request) = prepare_project(&this, cx).await.unwrap() else {
+                        panic!("saved document must be ready to build");
+                    };
+                    assert_eq!(request.root_document(), expected);
+                    result.set(true);
+                })
+                .detach();
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(completed.get());
+        assert!(!cx.did_prompt_for_new_path());
+        assert!(!directory.path().join(ligature_settings::PROJECT_FILE).exists());
+        root.read_with(&cx, |workspace, _| {
+            assert_eq!(
+                workspace.project.as_ref().unwrap().root_document.as_deref(),
+                Some(std::path::Path::new("article.tex"))
+            );
+        });
+    }
+
+    #[test]
+    fn build_preparation_uses_the_active_unsaved_main_and_rechecks_after_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let main = directory.path().join("main.tex");
+        let other = directory.path().join("other.tex");
+        std::fs::write(&main, "\\documentclass{article}").unwrap();
+        std::fs::write(&other, "fragment").unwrap();
+        let mut cx = TestAppContext::single();
+        let (window, root) = crate::tests::workspace(&mut cx);
+        crate::tests::open(&mut cx, window, &other);
+        crate::tests::type_text(&mut cx, &root, "\\documentclass{book}");
+        let completed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let result = std::rc::Rc::clone(&completed);
+        let expected = std::fs::canonicalize(&other).unwrap();
+        cx.update_window(window.into(), |_, window, cx| {
+            root.update(cx, |_, cx| {
+                cx.spawn_in(window, async move |this, cx| {
+                    let BuildPreparation::SaveRequired(paths) = prepare_project(&this, cx).await.unwrap() else {
+                        panic!("dirty document must be saved before building");
+                    };
+                    assert_eq!(paths, vec![expected.clone()]);
+                    assert!(super::super::lifecycle::save(&this, cx, false).await.unwrap());
+                    let BuildPreparation::Ready(request) = prepare_project(&this, cx).await.unwrap() else {
+                        panic!("saved document must be ready to build");
+                    };
+                    assert_eq!(request.root_document(), expected);
+                    result.set(true);
+                })
+                .detach();
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(completed.get());
+        assert!(!root.read_with(&cx, |workspace, cx| workspace.dirty(cx)));
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

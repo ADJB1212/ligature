@@ -7,7 +7,7 @@ rust-version.workspace = true
 repository.workspace = true
 license.workspace = true
 publish = false
-description = "TeX project membership, root-document selection, and relationships between project files"
+description = "TeX project membership, root-document discovery, and relationships between project files"
 
 [dependencies]
 ligature-buffer.workspace = true
