@@ -12,6 +12,7 @@ use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Duration};
 pub(super) struct BuildUi {
     pub visible: bool,
     job: Option<BuildJob>,
+    running_document: Option<DocumentId>,
     task: Option<Task<()>>,
     snapshot: BuildSnapshot,
     last_success: Option<BuildArtifacts>,
@@ -97,6 +98,14 @@ impl BuildUi {
             job.cancel();
         }
         *self = Self::default();
+    }
+
+    pub fn document_closed(&mut self, document: DocumentId) {
+        if self.running_document == Some(document)
+            && let Some(job) = &self.job
+        {
+            job.cancel();
+        }
     }
 }
 
@@ -348,6 +357,7 @@ impl Workspace {
         let job = BuildJob::default();
         let worker = job.clone();
         self.build_ui.job = Some(job.clone());
+        self.build_ui.running_document = document;
         self.build_ui.snapshot = BuildSnapshot {
             state: BuildState::Running,
             id: job.snapshot().id,
@@ -383,6 +393,7 @@ impl Workspace {
                             workspace.build_ui.disk_stale = false;
                         }
                         if finished {
+                            workspace.build_ui.running_document = None;
                             workspace.build_ui.record_completed(&snapshot);
                             if snapshot.state != BuildState::Canceled {
                                 workspace.build_ui.diagnostic_document = document;
@@ -1050,5 +1061,21 @@ mod tests {
         cx.background_executor.advance_clock(Duration::from_millis(15));
         cx.run_until_parked();
         assert!(retired.get());
+    }
+
+    #[test]
+    fn closing_an_untitled_source_cancels_only_its_running_build() {
+        let buffer = ligature_buffer::Buffer::new();
+        let other = ligature_buffer::Buffer::new();
+        let job = BuildJob::default();
+        let mut ui = BuildUi::default();
+        ui.job = Some(job.clone());
+        ui.running_document = Some(buffer.id());
+        ui.document_closed(other.id());
+        assert!(ui.running());
+        ui.document_closed(buffer.id());
+        job.fail_installation("canceled before launch".into());
+        assert_eq!(job.state(), BuildState::Canceled);
+        assert!(job.snapshot().diagnostics.is_empty());
     }
 }

@@ -165,11 +165,20 @@ impl IncludeGraph {
             ligature_fs::read(path).map(|file| file.text).map_err(|error| error.to_string())
         })
     }
-    pub fn load_with<T: AsRef<str>>(root: &Path, mut read: impl FnMut(&Path) -> Result<T, String>) -> Self {
+    pub fn load_with<T: AsRef<str>>(root: &Path, read: impl FnMut(&Path) -> Result<T, String>) -> Self {
+        Self::load_cancellable(root, read, || false)
+    }
+
+    pub fn load_cancellable<T: AsRef<str>>(
+        root: &Path, mut read: impl FnMut(&Path) -> Result<T, String>, mut canceled: impl FnMut() -> bool,
+    ) -> Self {
         let mut graph = Self::default();
         let mut pending = vec![std::fs::canonicalize(root).unwrap_or_else(|_| normalize(root))];
         let mut visited = BTreeSet::new();
         while let Some(source) = pending.pop() {
+            if canceled() {
+                return Self::default();
+            }
             if !visited.insert(source.clone()) {
                 continue;
             }
@@ -222,6 +231,23 @@ pub fn include_paths(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canceling_include_discovery_stops_reads_and_discards_partial_graphs() {
+        let canceled = std::cell::Cell::new(false);
+        let reads = std::cell::Cell::new(0);
+        let graph = IncludeGraph::load_cancellable(
+            Path::new("/p/main.tex"),
+            |_| {
+                reads.set(reads.get() + 1);
+                canceled.set(true);
+                Ok::<_, String>("\\input{child}".to_owned())
+            },
+            || canceled.get(),
+        );
+        assert_eq!(reads.get(), 1);
+        assert_eq!(graph, IncludeGraph::default());
+    }
     #[test]
     fn cyclic_and_missing_includes_are_recorded_without_looping() {
         let dir = tempfile::tempdir().unwrap();

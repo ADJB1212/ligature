@@ -26,6 +26,14 @@ pub(super) struct BundleUi {
 }
 
 impl BundleUi {
+    pub(super) fn cancel(&mut self) {
+        if let Some(cancel) = &self.cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.task = None;
+        self.inspection = None;
+    }
+
     pub(super) fn busy(&self) -> bool {
         self.task.is_some()
     }

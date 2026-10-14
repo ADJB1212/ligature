@@ -5,6 +5,7 @@ mod export;
 mod language;
 mod lifecycle;
 mod project;
+mod recovery;
 mod resources;
 mod search;
 mod semantics;
@@ -157,7 +158,9 @@ pub struct Workspace {
     settings_errors: Vec<String>,
     includes: ligature_project::IncludeGraph,
     project_task: Option<Task<()>>,
+    project_cancel: ligature_search::Cancellation,
     session_path: Option<PathBuf>,
+    recovery: recovery::RecoveryUi,
     search: search::SearchUi,
     bundle_ui: resources::BundleUi,
     build_ui: builds::BuildUi,
@@ -247,7 +250,9 @@ impl Workspace {
             settings_window: None,
             includes: ligature_project::IncludeGraph::default(),
             project_task: None,
+            project_cancel: ligature_search::Cancellation::default(),
             session_path: None,
+            recovery: recovery::RecoveryUi::default(),
             search,
             bundle_ui: resources::BundleUi::default(),
             build_ui: builds::BuildUi::default(),
@@ -327,17 +332,24 @@ impl Workspace {
             return;
         }
         self.stop_watching(cx);
+        self.language_document_closed(self.editor.read(cx).state().buffer().id(), cx);
+        self.build_ui.document_closed(self.editor.read(cx).state().buffer().id());
+        self.editor.update(cx, |editor, _| editor.cancel_background_work());
         self.document = None;
         self.tabs.remove(self.active_tab);
         if !self.tabs.is_empty() {
             self.active_tab = self.active_tab.min(self.tabs.len() - 1);
             self.restore_active(window, cx);
             self.update_membership();
+            self.queue_recovery(cx);
             return;
         }
         self.update_membership();
         self.search_sources_changed(cx);
         self.refresh_preview_staleness(cx);
+        self.open_text.clear();
+        self.semantic_ui.cancel();
+        self.queue_recovery(cx);
     }
 
     fn park_active(&mut self) {
@@ -505,6 +517,12 @@ impl Workspace {
         }
         self.search_sources_changed(cx);
         cx.notify();
+    }
+}
+
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        self.project_cancel.cancel();
     }
 }
 

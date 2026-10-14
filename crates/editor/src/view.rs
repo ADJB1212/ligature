@@ -62,6 +62,7 @@ pub struct Editor {
     search_error: Option<String>,
     search: Option<ligature_search::Search>,
     search_matches: Vec<Range<usize>>,
+    search_limited: bool,
     search_revision: Option<(ligature_buffer::Revision, bool)>,
     diagnostics: Vec<(Range<usize>, ligature_diagnostics::Severity)>,
     diagnostic_revision: Option<ligature_buffer::Revision>,
@@ -75,6 +76,13 @@ pub struct Editor {
 }
 
 impl Editor {
+    pub fn cancel_background_work(&mut self) {
+        self.parse_task = None;
+        self.parse_requested = None;
+        self.blink = None;
+        self.dismiss_assistance();
+    }
+
     pub fn new(buffer: Buffer, cx: &mut Context<Self>) -> Self {
         Self::with_language(buffer, false, ligature_syntax::Language::Tex, cx)
     }
@@ -106,6 +114,7 @@ impl Editor {
             search_error: None,
             search: None,
             search_matches: Vec::new(),
+            search_limited: false,
             search_revision: None,
             diagnostics: Vec::new(),
             diagnostic_revision: None,
@@ -306,7 +315,20 @@ impl Editor {
         if self.search_revision == Some(revision) && !revision.1 {
             return;
         }
-        self.search_matches = self.search.as_ref().map_or_else(Vec::new, |search| search.find(self.state.text()));
+        self.search_matches = self.search.as_ref().map_or_else(Vec::new, |search| {
+            search.find_limited(
+                self.state.text(),
+                &ligature_search::Cancellation::default(),
+                ligature_search::MAX_DOCUMENT_MATCHES + 1,
+            )
+        });
+        self.search_limited = self.search_matches.len() > ligature_search::MAX_DOCUMENT_MATCHES;
+        self.search_matches.truncate(ligature_search::MAX_DOCUMENT_MATCHES);
+        if self.search.is_some() {
+            self.search_error = self
+                .search_limited
+                .then(|| "Document search reached its retention limit. Narrow the search before replacing all matches.".into());
+        }
         self.search_revision = Some(revision);
     }
 
@@ -341,6 +363,9 @@ impl Editor {
         self.state.commit_composition();
         self.refresh_search();
         let matches = if all {
+            if self.search_limited {
+                return 0;
+            }
             self.search_matches.as_slice()
         } else {
             self.search_status()
@@ -1094,6 +1119,52 @@ mod tests {
     use super::*;
     use gpui::{AppContext, TestAppContext};
     use ligature_buffer::Buffer;
+
+    #[test]
+    fn closing_retained_editors_cancels_parse_and_blink_tasks() {
+        let mut cx = TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new(Buffer::from_text("\\section{Closed}"), cx));
+        editor.update(&mut cx, |editor, cx| {
+            editor.restart_blink(cx);
+            assert!(editor.parse_task.is_some());
+            assert!(editor.blink.is_some());
+            editor.cancel_background_work();
+        });
+        cx.run_until_parked();
+        editor.read_with(&cx, |editor, _| {
+            assert!(editor.parse_task.is_none());
+            assert!(editor.parse_requested.is_none());
+            assert!(editor.blink.is_none());
+            assert!(editor.syntax_snapshot().is_none());
+        });
+    }
+
+    #[test]
+    fn limited_document_search_blocks_replace_all_and_allows_single_replacements() {
+        let mut cx = TestAppContext::single();
+        let text = "x".repeat(ligature_search::MAX_DOCUMENT_MATCHES + 1);
+        let editor = cx.new(|cx| Editor::new(Buffer::from_text(&text), cx));
+        editor.update(&mut cx, |editor, cx| {
+            assert!(
+                editor
+                    .set_search(
+                        ligature_search::Query {
+                            text: "x".into(),
+                            ..Default::default()
+                        },
+                        cx
+                    )
+                    .is_err()
+            );
+            assert_eq!(editor.search_matches().len(), ligature_search::MAX_DOCUMENT_MATCHES);
+            assert_eq!(editor.replace_match("y", true, cx), 0);
+            assert_eq!(editor.state.text(), text);
+            assert_eq!(editor.replace_match("y", false, cx), 1);
+            assert!(!editor.search_limited);
+            assert!(editor.search_error.is_none());
+            assert!(editor.state.text().starts_with('y'));
+        });
+    }
 
     #[test]
     fn read_only_logs_do_not_schedule_syntax_parsing() {

@@ -1,7 +1,10 @@
 use std::{
     collections::BTreeMap,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -23,6 +26,7 @@ pub(super) struct LanguageUi {
     generation: u64,
     started_generation: u64,
     client: Option<Arc<Client>>,
+    startup_cancel: Option<Arc<AtomicBool>>,
     documents: BTreeMap<String, Document>,
     diagnostics: Store,
     status: String,
@@ -33,6 +37,28 @@ pub(super) struct LanguageUi {
     completion_request: Option<Pending>,
     hover_request: Option<Pending>,
     completion_since: Option<Instant>,
+}
+
+impl LanguageUi {
+    pub(super) fn stop(&mut self) -> Option<Arc<Client>> {
+        self.generation += 1;
+        self.root = None;
+        if let Some(cancel) = self.startup_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.task = None;
+        self.completion_request = None;
+        self.hover_request = None;
+        self.documents.clear();
+        self.diagnostics.clear_provider(&provider());
+        self.client.take()
+    }
+}
+
+impl Drop for LanguageUi {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 #[cfg(test)]
@@ -73,11 +99,17 @@ impl Workspace {
     }
 
     pub(super) fn restart_language_server(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = &self.language_ui.startup_cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
         self.language_ui.generation += 1;
         cx.notify();
     }
 
-    fn clear_language_server(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn clear_language_server(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = self.language_ui.startup_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
         self.language_ui.completion_request = None;
         self.language_ui.hover_request = None;
         self.language_ui.completion_seen = None;
@@ -95,6 +127,33 @@ impl Workspace {
         }
     }
 
+    pub(super) fn language_document_closed(&mut self, id: DocumentId, cx: &mut Context<Self>) {
+        if self
+            .language_ui
+            .completion_request
+            .as_ref()
+            .is_some_and(|request| request.target.document == id)
+        {
+            self.language_ui.completion_request = None;
+            self.language_ui.completion_seen = None;
+        }
+        if self
+            .language_ui
+            .hover_request
+            .as_ref()
+            .is_some_and(|request| request.target.document == id)
+        {
+            self.language_ui.hover_request = None;
+            self.language_ui.hover_seen = None;
+        }
+        if let Some(path) = self.document.as_ref().and_then(|document| document.path.as_ref()) {
+            self.language_ui.diagnostics.clear_document(path);
+        }
+        if self.tabs.len() == 1 && self.project.is_none() && self.language_ui.task.is_some() {
+            self.clear_language_server(cx);
+        }
+    }
+
     pub(super) fn queue_language_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.language_ui.task = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -107,12 +166,16 @@ impl Workspace {
                         workspace.language_ui.stderr.clear();
                         workspace.language_ui.status = if root.is_some() { "Starting Texlab..." } else { "Local completion available. Open a project or save a document to start Texlab." }.into();
                         cx.notify();
-                        return root.map(|root| (root, workspace.language_ui.generation));
+                        return root.map(|root| {
+                            let cancel = Arc::new(AtomicBool::new(false));
+                            workspace.language_ui.startup_cancel = Some(Arc::clone(&cancel));
+                            (root, workspace.language_ui.generation, cancel)
+                        });
                     }
                     workspace.poll_language_server(window, cx);
                     None
                 }) else { break; };
-                if let Some((root, generation)) = start {
+                if let Some((root, generation, cancel)) = start {
                     let start_root = root.clone();
                     let result = cx.background_executor().spawn(async move {
                         let resources = ligature_toolchain::BundledResources::discover()?;
@@ -121,7 +184,7 @@ impl Workspace {
                             "chktex":{"onOpenAndSave":false,"onEdit":false},
                             "latexindent":{"local":null},"diagnosticsDelay":200
                         }});
-                        Client::start(ServerConfig { executable: resources.language_server()?, arguments: vec!["run".into()], root: start_root, settings }).map(Arc::new)
+                        Client::start_cancellable(ServerConfig { executable: resources.language_server()?, arguments: vec!["run".into()], root: start_root, settings }, &cancel).map(Arc::new)
                     }).await;
                     if this.update_in(cx, |workspace, _, cx| {
                         if workspace.language_root().as_ref() != Some(&root) || workspace.language_ui.generation != generation { return; }

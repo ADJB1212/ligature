@@ -152,3 +152,57 @@ fn missing_application_owned_server_reports_a_startup_failure() {
     };
     assert!(Client::start(config).err().unwrap().contains("Missing bundled Texlab executable"));
 }
+
+#[test]
+fn explicit_shutdown_waits_for_graceful_exit_and_is_idempotent() {
+    let root = tempfile::tempdir().unwrap();
+    let shutdown = json!({"jsonrpc":"2.0","id":2,"result":null}).to_string();
+    let behavior = format!(
+        r#"
+while true; do
+    read_message
+    case "$body" in
+        *shutdown*) printf 'Content-Length: {}\r\n\r\n%s' '{}' ;;
+        *'"method":"exit"'*) printf 'exit' > exited.txt; exit 0 ;;
+    esac
+done
+"#,
+        shutdown.len(),
+        shutdown
+    );
+    let client = Client::start(shell_server(root.path(), &behavior)).unwrap();
+    client.shutdown();
+    assert!(root.path().join("exited.txt").is_file());
+    client.shutdown();
+    assert!(client.request("textDocument/hover", json!({})).is_err());
+}
+
+#[test]
+fn explicit_shutdown_kills_and_reaps_an_unresponsive_server() {
+    let root = tempfile::tempdir().unwrap();
+    let client = Client::start(shell_server(
+        root.path(),
+        r#"
+printf '%s' "$$" > pid.txt
+while true; do read_message; done
+"#,
+    ))
+    .unwrap();
+    client.shutdown();
+    let pid = std::fs::read_to_string(root.path().join("pid.txt")).unwrap();
+    let status = std::process::Command::new("/bin/kill")
+        .args(["-0", &pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!status.success());
+}
+
+#[test]
+fn canceled_startup_does_not_spawn_a_server() {
+    let root = tempfile::tempdir().unwrap();
+    let canceled = std::sync::atomic::AtomicBool::new(true);
+    let config = shell_server(root.path(), "printf 'started' > started.txt");
+    assert!(Client::start_cancellable(config, &canceled).err().unwrap().contains("canceled"));
+    assert!(!root.path().join("started.txt").exists());
+}

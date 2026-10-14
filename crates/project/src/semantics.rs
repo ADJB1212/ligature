@@ -47,7 +47,16 @@ impl SemanticIndex {
         Self::refresh_with(root, &Self::default(), read)
     }
 
-    pub fn refresh_with<T>(root: &Path, previous: &Self, mut read: impl FnMut(&Path) -> Result<T, String>) -> Self
+    pub fn refresh_with<T>(root: &Path, previous: &Self, read: impl FnMut(&Path) -> Result<T, String>) -> Self
+    where
+        T: AsRef<str> + Into<Arc<str>>,
+    {
+        Self::refresh_cancellable(root, previous, read, || false)
+    }
+
+    pub fn refresh_cancellable<T>(
+        root: &Path, previous: &Self, mut read: impl FnMut(&Path) -> Result<T, String>, mut canceled: impl FnMut() -> bool,
+    ) -> Self
     where
         T: AsRef<str> + Into<Arc<str>>,
     {
@@ -63,6 +72,9 @@ impl SemanticIndex {
             }
         }
         while let Some(path) = pending.pop() {
+            if canceled() {
+                return Self::default();
+            }
             if !visited.insert(path.clone()) {
                 continue;
             }
@@ -104,6 +116,9 @@ impl SemanticIndex {
             index.sources.insert(path, source);
         }
         for path in bibliography_files {
+            if canceled() {
+                return Self::default();
+            }
             match read(&path) {
                 Ok(text) => {
                     let unchanged = previous
@@ -125,6 +140,9 @@ impl SemanticIndex {
             }
         }
         for (path, source) in &index.sources {
+            if canceled() {
+                return Self::default();
+            }
             for reference in &source.document.references {
                 if index.definitions(&reference.name).is_empty() {
                     index.unresolved_references.push((
@@ -249,6 +267,23 @@ fn outline(root: &Path, sources: &BTreeMap<PathBuf, Source>) -> Vec<OutlineEntry
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn canceling_semantic_refresh_stops_reads_and_discards_partial_indexes() {
+        let canceled = std::cell::Cell::new(false);
+        let reads = std::cell::Cell::new(0);
+        let index = super::SemanticIndex::refresh_cancellable(
+            std::path::Path::new("/p/main.tex"),
+            &super::SemanticIndex::default(),
+            |_| {
+                reads.set(reads.get() + 1);
+                canceled.set(true);
+                Ok::<_, String>("\\input{child}\\label{first}".to_owned())
+            },
+            || canceled.get(),
+        );
+        assert_eq!(reads.get(), 1);
+        assert_eq!(index, super::SemanticIndex::default());
+    }
     use super::*;
 
     fn files() -> BTreeMap<PathBuf, String> {

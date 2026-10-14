@@ -5,6 +5,18 @@ pub use tex::parse_tex;
 
 use std::{collections::BTreeMap, ops::Range, path::PathBuf};
 
+pub const MAX_DIAGNOSTICS: usize = 1000;
+pub const MAX_MESSAGE_BYTES: usize = 4096;
+const MAX_STORE_DIAGNOSTICS: usize = 10_000;
+
+pub fn bound_message(message: &mut String) {
+    let mut end = message.len().min(MAX_MESSAGE_BYTES);
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    message.truncate(end);
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct BuildId(pub u64);
 
@@ -120,7 +132,11 @@ pub struct Store {
 
 impl Store {
     pub fn replace(&mut self, path: PathBuf, provider: Provider, mut diagnostics: Vec<Diagnostic>) {
+        self.entries.remove(&(path.clone(), provider.clone()));
+        let retained: usize = self.entries.values().map(Vec::len).sum();
+        diagnostics.truncate(MAX_DIAGNOSTICS.min(MAX_STORE_DIAGNOSTICS.saturating_sub(retained)));
         for diagnostic in &mut diagnostics {
+            bound_message(&mut diagnostic.message);
             diagnostic.path = Some(path.clone());
             diagnostic.provider = provider.clone();
         }
@@ -160,6 +176,35 @@ pub fn grouped(diagnostics: &[Diagnostic]) -> BTreeMap<(Option<PathBuf>, Severit
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_retention_bounds_counts_and_unicode_messages() {
+        let mut store = Store::default();
+        let provider = Provider::LanguageServer("Texlab".into());
+        let diagnostic = Diagnostic {
+            severity: Severity::Warning,
+            provider: provider.clone(),
+            message: "猫".repeat(MAX_MESSAGE_BYTES),
+            path: None,
+            range: None,
+        };
+        for index in 0..12 {
+            store.replace(
+                format!("/p/{index}.tex").into(),
+                provider.clone(),
+                vec![diagnostic.clone(); MAX_DIAGNOSTICS + 1],
+            );
+        }
+        assert_eq!(store.iter().count(), MAX_STORE_DIAGNOSTICS);
+        assert!(
+            store
+                .iter()
+                .all(|diagnostic| diagnostic.message.len() <= MAX_MESSAGE_BYTES && diagnostic.message.ends_with('猫'))
+        );
+        store.clear_document(std::path::Path::new("/p/0.tex"));
+        store.replace("/p/11.tex".into(), provider.clone(), vec![diagnostic]);
+        assert_eq!(store.document(std::path::Path::new("/p/11.tex"), &provider).len(), 1);
+    }
 
     #[test]
     fn replacements_and_clears_preserve_other_documents_and_providers() {

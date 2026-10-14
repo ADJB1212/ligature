@@ -88,6 +88,7 @@ impl Preview {
         self.generation += 1;
         self.load_generation += 1;
         self.load_task = None;
+        self.render_task = None;
         self.document = None;
         self.pdf_path = None;
         self.layout.clear();

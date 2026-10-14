@@ -1,4 +1,8 @@
-//! Typed application and project configuration and workspace session persistence.
+//! Typed configuration, workspace sessions, and unsaved document recovery persistence.
+
+mod recovery;
+
+pub use recovery::{Recovery, RecoveryDocument, RecoveryStore, RecoveryWrite};
 
 use serde::{Deserialize, Serialize};
 use std::{

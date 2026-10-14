@@ -58,10 +58,16 @@ pub(super) async fn load_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWin
         })
         .await?;
     this.update_in(cx, |workspace, window, cx| {
+        workspace.clear_language_server(cx);
+        workspace.language_ui.stop();
+        workspace.queue_language_server(window, cx);
+        workspace.semantic_ui.cancel();
         workspace.build_ui.reset();
         workspace.refresh_diagnostics(cx);
         workspace.preview.update(cx, |preview, cx| preview.clear(cx));
+        workspace.project_cancel.cancel();
         workspace.project_task = None;
+        workspace.project_disk = Arc::default();
         workspace.expanded.clear();
         workspace.directories.clear();
         workspace.expanded.insert(project.root.clone());
@@ -76,6 +82,7 @@ pub(super) async fn load_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWin
             workspace.settings_errors.clone_from(&workspace.configuration_errors);
         }
         workspace.apply_settings(cx);
+        workspace.queue_semantics(cx);
         workspace.update_membership();
         workspace.start_project_refresh(window, cx);
         workspace.search.preview = None;
@@ -91,6 +98,12 @@ pub(super) type OpenText = BTreeMap<PathBuf, Arc<str>>;
 pub(super) fn discover_root(
     project: &mut Project, settings: &mut Settings, active: Option<&Path>, text: &OpenText, cache: &mut TextCache,
 ) -> Vec<String> {
+    discover_root_cancellable(project, settings, active, text, cache, || false)
+}
+
+fn discover_root_cancellable(
+    project: &mut Project, settings: &mut Settings, active: Option<&Path>, text: &OpenText, cache: &mut TextCache, canceled: impl Fn() -> bool,
+) -> Vec<String> {
     project.root_document = None;
     let mut errors = Vec::new();
     if let Some(root) = &settings.root_document
@@ -99,11 +112,16 @@ pub(super) fn discover_root(
         errors.push(error);
         settings.root_document = None;
     }
-    project.discover_root_document(&project.root.join(&settings.build.output_directory), active, |path| {
-        text.get(path)
-            .cloned()
-            .map_or_else(|| cache.read(path).map_err(|error| error.to_string()), Ok)
-    });
+    project.discover_root_cancellable(
+        &project.root.join(&settings.build.output_directory),
+        active,
+        |path| {
+            text.get(path)
+                .cloned()
+                .map_or_else(|| cache.read(path).map_err(|error| error.to_string()), Ok)
+        },
+        canceled,
+    );
     errors
 }
 
@@ -188,6 +206,9 @@ impl Workspace {
     }
 
     pub(super) fn start_project_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.project_cancel.cancel();
+        let cancellation = ligature_search::Cancellation::default();
+        self.project_cancel = cancellation.clone();
         let cache = Arc::clone(&self.project_disk);
         self.project_task = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -222,34 +243,48 @@ impl Workspace {
                 let expected_active = active.clone();
                 let expected_settings = settings.clone();
                 let disk = Arc::clone(&cache);
+                let worker_cancel = cancellation.clone();
                 let (directories, graph, root_document, settings, errors, stale_pdf, stale_diagnostics) = cx
                     .background_executor()
                     .spawn(async move {
                         let mut disk = disk.lock().unwrap();
-                        errors.extend(discover_root(&mut project, &mut settings, active.as_deref(), &text, &mut disk));
+                        errors.extend(discover_root_cancellable(
+                            &mut project,
+                            &mut settings,
+                            active.as_deref(),
+                            &text,
+                            &mut disk,
+                            || worker_cancel.is_canceled(),
+                        ));
                         let output = root.join(&settings.build.output_directory);
                         let directories: BTreeMap<_, _> = expanded
                             .into_iter()
+                            .take_while(|_| !worker_cancel.is_canceled())
                             .map(|path| {
                                 let directory = ligature_project::directory(&path, &output);
                                 (path, directory)
                             })
                             .collect();
                         let graph = project.root_document.as_ref().map_or_else(IncludeGraph::default, |path| {
-                            IncludeGraph::load_with(&root.join(path), |path| {
-                                text.get(path)
-                                    .cloned()
-                                    .map_or_else(|| disk.read(path).map_err(|error| error.to_string()), Ok)
-                            })
+                            IncludeGraph::load_cancellable(
+                                &root.join(path),
+                                |path| {
+                                    text.get(path)
+                                        .cloned()
+                                        .map_or_else(|| disk.read(path).map_err(|error| error.to_string()), Ok)
+                                },
+                                || worker_cancel.is_canceled(),
+                            )
                         });
                         disk.prune();
                         drop(disk);
                         let stale_pdf = artifacts.map(|artifacts| {
-                            let stale = !artifacts.sources.matches_disk(&root, &output);
+                            let stale = !worker_cancel.is_canceled() && !artifacts.sources.matches_disk(&root, &output);
                             (artifacts.pdf, stale)
                         });
                         let stale_diagnostics = diagnostic_paths
                             .into_iter()
+                            .take_while(|_| !worker_cancel.is_canceled())
                             .filter(|path| diagnostic_sources.as_ref().is_none_or(|sources| !sources.matches_disk_file(path)))
                             .collect();
                         (directories, graph, project.root_document, settings, errors, stale_pdf, stale_diagnostics)
@@ -257,7 +292,8 @@ impl Workspace {
                     .await;
                 if this
                     .update_in(cx, |workspace, _, cx| {
-                        if workspace.project.as_ref().is_none_or(|project| project.root != expected_root)
+                        if cancellation.is_canceled()
+                            || workspace.project.as_ref().is_none_or(|project| project.root != expected_root)
                             || workspace.document.as_ref().and_then(|document| document.path.as_ref()) != expected_active.as_ref()
                             || workspace.settings != expected_settings
                         {

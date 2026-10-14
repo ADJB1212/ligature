@@ -5,7 +5,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender, SyncSender, TryRecvError},
     },
     thread,
@@ -124,7 +124,7 @@ impl Drop for Request {
 
 pub struct Client {
     transport: Arc<Transport>,
-    child: Option<Child>,
+    child: Mutex<Option<Child>>,
     events: Mutex<Receiver<Event>>,
     pub capabilities: Capabilities,
 }
@@ -143,6 +143,13 @@ fn fail(pending: &Pending, failure: &Mutex<Option<String>>, events: &SyncSender<
 
 impl Client {
     pub fn start(config: ServerConfig) -> Result<Self, String> {
+        Self::start_cancellable(config, &AtomicBool::new(false))
+    }
+
+    pub fn start_cancellable(config: ServerConfig, canceled: &AtomicBool) -> Result<Self, String> {
+        if canceled.load(Ordering::Relaxed) {
+            return Err("Language-server startup canceled".into());
+        }
         if !config.executable.is_absolute() || !config.executable.is_file() {
             return Err(format!("Missing bundled Texlab executable: {}", config.executable.display()));
         }
@@ -251,30 +258,38 @@ impl Client {
         });
         let mut client = Self {
             transport,
-            child: Some(child),
+            child: Mutex::new(Some(child)),
             events: Mutex::new(received),
             capabilities: Capabilities::parse(&json!({}))?,
         };
-        let initialized = client
-            .request(
-                "initialize",
-                json!({
-                    "processId":std::process::id(),"clientInfo":{"name":"Ligature"},"rootUri":root_uri,
-                    "initializationOptions":{"skipDistro":true},
-                    "workspaceFolders":[{"uri":root_uri,"name":config.root.file_name().unwrap_or_default().to_string_lossy()}],
-                    "capabilities":{
-                        "general":{"positionEncodings":["utf-8","utf-16","utf-32"]},
-                        "workspace":{"configuration":true},
-                        "textDocument":{
-                            "synchronization":{"didSave":true},
-                            "publishDiagnostics":{"versionSupport":true},
-                            "completion":{"completionItem":{"snippetSupport":true,"insertReplaceSupport":true}},
-                            "hover":{"contentFormat":["plaintext"]}
-                        }
+        let mut initialization = client.request(
+            "initialize",
+            json!({
+                "processId":std::process::id(),"clientInfo":{"name":"Ligature"},"rootUri":root_uri,
+                "initializationOptions":{"skipDistro":true},
+                "workspaceFolders":[{"uri":root_uri,"name":config.root.file_name().unwrap_or_default().to_string_lossy()}],
+                "capabilities":{
+                    "general":{"positionEncodings":["utf-8","utf-16","utf-32"]},
+                    "workspace":{"configuration":true},
+                    "textDocument":{
+                        "synchronization":{"didSave":true},
+                        "publishDiagnostics":{"versionSupport":true},
+                        "completion":{"completionItem":{"snippetSupport":true,"insertReplaceSupport":true}},
+                        "hover":{"contentFormat":["plaintext"]}
                     }
-                }),
-            )?
-            .wait(Duration::from_secs(10));
+                }
+            }),
+        )?;
+        let initialized = loop {
+            if canceled.load(Ordering::Relaxed) {
+                client.shutdown();
+                break Err("Language-server startup canceled".into());
+            }
+            if let Some(result) = initialization.poll() {
+                break result;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
         let initialized = initialized.map_err(|error| {
             let stderr: String = client
                 .events()
@@ -304,28 +319,36 @@ impl Client {
     pub fn failure(&self) -> Option<String> {
         self.transport.failure.lock().unwrap().clone()
     }
+
+    pub fn shutdown(&self) {
+        if let Some(child) = self.child.lock().unwrap().take() {
+            retire(child, &self.transport);
+        }
+    }
 }
 
 impl Drop for Client {
     fn drop(&mut self) {
-        let Some(mut child) = self.child.take() else {
+        let Some(child) = self.child.get_mut().unwrap().take() else {
             return;
         };
         let transport = Arc::clone(&self.transport);
-        thread::spawn(move || {
-            if let Ok(mut request) = transport.request("shutdown", Value::Null) {
-                let _ = request.wait(Duration::from_secs(1));
-            }
-            let _ = transport.notify("exit", Value::Null);
-            let deadline = Instant::now() + Duration::from_secs(1);
-            while Instant::now() < deadline {
-                if child.try_wait().ok().flatten().is_some() {
-                    return;
-                }
-                thread::sleep(Duration::from_millis(20));
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-        });
+        thread::spawn(move || retire(child, &transport));
     }
+}
+
+fn retire(mut child: Child, transport: &Arc<Transport>) {
+    if let Ok(mut request) = transport.request("shutdown", Value::Null) {
+        let _ = request.wait(Duration::from_secs(1));
+    }
+    let _ = transport.notify("exit", Value::Null);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        if child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }

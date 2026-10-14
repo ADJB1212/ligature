@@ -7,8 +7,17 @@ use crate::{IncludeGraph, Project, eligible_search_path, search_files};
 impl Project {
     /// An active standalone document takes precedence over the existing configured root.
     pub fn discover_root_document<T: AsRef<str> + Clone>(
-        &mut self, output_directory: &Path, active: Option<&Path>, mut read: impl FnMut(&Path) -> Result<T, String>,
+        &mut self, output_directory: &Path, active: Option<&Path>, read: impl FnMut(&Path) -> Result<T, String>,
     ) {
+        self.discover_root_cancellable(output_directory, active, read, || false);
+    }
+
+    pub fn discover_root_cancellable<T: AsRef<str> + Clone>(
+        &mut self, output_directory: &Path, active: Option<&Path>, mut read: impl FnMut(&Path) -> Result<T, String>, canceled: impl Fn() -> bool,
+    ) {
+        if canceled() {
+            return;
+        }
         let active = active.filter(|path| eligible_search_path(&self.root, path, output_directory) && tex_file(path));
         let mut text = BTreeMap::new();
         if let Some(path) = active
@@ -26,9 +35,12 @@ impl Project {
             return;
         }
         self.root_document = None;
-        let files = search_files(&self.root, output_directory, || false);
+        let files = search_files(&self.root, output_directory, &canceled);
         let files: Vec<_> = files.paths.into_iter().filter(|path| tex_file(path)).collect();
         for path in &files {
+            if canceled() {
+                return;
+            }
             if !text.contains_key(path)
                 && let Ok(source) = read(path)
             {
@@ -48,11 +60,14 @@ impl Project {
         });
         let containing = active.and_then(|active| {
             candidates.iter().copied().find(|path| {
-                IncludeGraph::load_with(path, |path| text.get(path).cloned().map_or_else(|| read(path), Ok))
+                IncludeGraph::load_cancellable(path, |path| text.get(path).cloned().map_or_else(|| read(path), Ok), &canceled)
                     .files
                     .contains_key(active)
             })
         });
+        if canceled() {
+            return;
+        }
         let root = containing.or_else(|| candidates.first().copied()).or_else(|| {
             files
                 .iter()

@@ -3,10 +3,13 @@
 mod project;
 
 pub use project::{
-    BufferVersion, FileReplacement, FileResults, ProjectResults, ReplacementPreview, SourceSnapshot, apply_disk_replacement, search_project,
+    BufferVersion, FileReplacement, FileResults, MAX_PROJECT_MATCHES, MAX_PROJECT_SOURCE_BYTES, ProjectResults, ReplacementPreview, SourceSnapshot,
+    apply_disk_replacement, search_project,
 };
 
 use regex::{Regex, RegexBuilder};
+
+pub const MAX_DOCUMENT_MATCHES: usize = 100_000;
 use std::{
     ops::Range,
     sync::{
@@ -66,7 +69,11 @@ impl Search {
     }
 
     pub fn find_cancellable(&self, text: &str, cancellation: &Cancellation) -> Vec<Range<usize>> {
-        if cancellation.is_canceled() {
+        self.find_limited(text, cancellation, usize::MAX)
+    }
+
+    pub fn find_limited(&self, text: &str, cancellation: &Cancellation, limit: usize) -> Vec<Range<usize>> {
+        if limit == 0 || cancellation.is_canceled() {
             return Vec::new();
         }
         let Some(pattern) = &self.pattern else {
@@ -82,6 +89,9 @@ impl Search {
                 continue;
             }
             found.push(range);
+            if found.len() >= limit {
+                break;
+            }
         }
         if cancellation.is_canceled() { Vec::new() } else { found }
     }

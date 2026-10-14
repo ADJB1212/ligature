@@ -20,6 +20,22 @@ pub(super) struct SemanticUi {
     pub index: Arc<SemanticIndex>,
     task: Option<Task<()>>,
     disk: Arc<Mutex<TextCache>>,
+    cancellation: ligature_search::Cancellation,
+}
+
+impl SemanticUi {
+    pub fn cancel(&mut self) {
+        self.cancellation.cancel();
+        self.task = None;
+        self.index = Arc::default();
+        self.disk = Arc::default();
+    }
+}
+
+impl Drop for SemanticUi {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
 }
 
 #[cfg(test)]
@@ -141,6 +157,13 @@ impl Workspace {
     }
 
     pub(super) fn queue_semantics(&mut self, cx: &mut Context<Self>) {
+        self.semantic_ui.cancellation.cancel();
+        let cancellation = ligature_search::Cancellation::default();
+        self.semantic_ui.cancellation = cancellation.clone();
+        if self.document.is_none() {
+            self.semantic_ui.cancel();
+            return;
+        }
         let cache = Arc::clone(&self.semantic_ui.disk);
         self.semantic_ui.task = Some(cx.spawn(async move |this, cx| {
             loop {
@@ -153,22 +176,31 @@ impl Workspace {
                 };
                 if let Some((root, text, version, previous)) = inputs {
                     let disk = Arc::clone(&cache);
+                    let worker_cancel = cancellation.clone();
                     let index = cx
                         .background_executor()
                         .spawn(async move {
                             let mut disk = disk.lock().unwrap();
-                            let index = SemanticIndex::refresh_with(&root, &previous, |path| {
-                                text.get(path)
-                                    .cloned()
-                                    .map_or_else(|| disk.read(path).map_err(|error| error.to_string()), Ok)
-                            });
+                            let index = SemanticIndex::refresh_cancellable(
+                                &root,
+                                &previous,
+                                |path| {
+                                    text.get(path)
+                                        .cloned()
+                                        .map_or_else(|| disk.read(path).map_err(|error| error.to_string()), Ok)
+                                },
+                                || worker_cancel.is_canceled(),
+                            );
                             disk.prune();
                             index
                         })
                         .await;
                     if this
                         .update(cx, |workspace, cx| {
-                            if workspace.semantic_version(cx) == version && workspace.semantic_ui.index.as_ref() != &index {
+                            if !cancellation.is_canceled()
+                                && workspace.semantic_version(cx) == version
+                                && workspace.semantic_ui.index.as_ref() != &index
+                            {
                                 workspace.semantic_ui.index = Arc::new(index);
                                 let labels: Vec<_> = workspace.semantic_ui.index.labels.keys().cloned().collect();
                                 let citations: Vec<_> = workspace.semantic_ui.index.bibliography.entries.keys().cloned().collect();

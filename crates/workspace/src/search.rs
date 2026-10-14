@@ -126,6 +126,7 @@ impl Drop for SearchUi {
 
 impl Workspace {
     pub(super) fn search_sources_changed(&mut self, cx: &mut Context<Self>) {
+        self.queue_recovery(cx);
         if self.search.applying {
             return;
         }
@@ -203,6 +204,7 @@ impl Workspace {
         );
         let changed = self.search.observed.as_ref() != Some(&observed);
         if changed {
+            self.queue_recovery(cx);
             self.refresh_preview_staleness(cx);
             self.refresh_diagnostics(cx);
             self.queue_semantics(cx);
@@ -332,6 +334,11 @@ impl Workspace {
     }
 
     pub(super) fn preview_project_replacements(&mut self, cx: &mut Context<Self>) {
+        if self.search.results.truncated {
+            self.search.error = Some("Search results reached their retention limit. Narrow the search before replacing.".into());
+            cx.notify();
+            return;
+        }
         if self.search.running || self.search.previewing || self.search.results.query != self.search.query {
             return;
         }
@@ -351,6 +358,10 @@ impl Workspace {
                     return;
                 }
                 workspace.search.previewing = false;
+                if preview.is_none() {
+                    workspace.search.error =
+                        Some("Replacement preview reached its retention limit. Narrow the search or shorten the replacement.".into());
+                }
                 workspace.search.preview = preview;
                 cx.notify();
             })
@@ -547,7 +558,16 @@ impl Workspace {
                         } else if self.search.running {
                             "Searching...".to_owned()
                         } else {
-                            format!("{} matches in {} files", self.search.results.count(), self.search.results.files.len())
+                            format!(
+                                "{} matches in {} files{}",
+                                self.search.results.count(),
+                                self.search.results.files.len(),
+                                if self.search.results.truncated {
+                                    " (limited; narrow the search)"
+                                } else {
+                                    ""
+                                }
+                            )
                         }))
                         .child(
                             Button::new("refresh-search", "Refresh")
@@ -559,7 +579,13 @@ impl Workspace {
                         )
                         .child(
                             Button::new("preview-replacement", "Preview Replacements")
-                                .disabled(self.busy || self.search.running || self.search.previewing || self.search.results.count() == 0)
+                                .disabled(
+                                    self.busy
+                                        || self.search.running
+                                        || self.search.previewing
+                                        || self.search.results.count() == 0
+                                        || self.search.results.truncated,
+                                )
                                 .on_click(cx.listener(|workspace, _, _, cx| workspace.preview_project_replacements(cx))),
                         ),
                 )

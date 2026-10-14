@@ -7,6 +7,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub const MAX_PROJECT_MATCHES: usize = 10_000;
+pub const MAX_PROJECT_SOURCE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_PROJECT_ERRORS: usize = 128;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BufferVersion {
     pub document: DocumentId,
@@ -33,16 +37,28 @@ pub struct ProjectResults {
     pub files: Vec<FileResults>,
     pub errors: BTreeMap<PathBuf, String>,
     pub canceled: bool,
+    pub truncated: bool,
 }
 impl ProjectResults {
     pub fn count(&self) -> usize {
         self.files.iter().map(|file| file.matches.len()).sum()
     }
     pub fn preview(&self, replacement: &str) -> ReplacementPreview {
-        self.preview_cancellable(replacement, &Cancellation::default())
-            .expect("uncanceled preview")
+        self.preview_cancellable(replacement, &Cancellation::default()).unwrap_or_default()
     }
     pub fn preview_cancellable(&self, replacement: &str, cancellation: &Cancellation) -> Option<ReplacementPreview> {
+        if self.truncated || self.canceled {
+            return None;
+        }
+        let bytes = self.files.iter().try_fold(0usize, |retained, file| {
+            let removed: usize = file.matches.iter().map(|matched| matched.range.len()).sum();
+            let added = replacement.len().checked_mul(file.matches.len())?;
+            let after = file.source.text.len().checked_sub(removed)?.checked_add(added)?;
+            retained.checked_add(after.checked_mul(2)?)
+        })?;
+        if bytes > MAX_PROJECT_SOURCE_BYTES {
+            return None;
+        }
         let files = self
             .files
             .iter()
@@ -131,7 +147,9 @@ fn search_project_with(
             files.paths.insert(path.clone());
         }
     }
-    results.errors = files.errors;
+    results.truncated = files.errors.len() > MAX_PROJECT_ERRORS;
+    results.errors = files.errors.into_iter().take(MAX_PROJECT_ERRORS).collect();
+    let (mut retained_bytes, mut retained_matches) = (0, 0);
     for path in files.paths {
         if cancellation.is_canceled() {
             break;
@@ -142,19 +160,44 @@ fn search_project_with(
             match read(&path) {
                 Ok(source) => Cow::Owned(source),
                 Err(error) => {
-                    results.errors.insert(path, error);
+                    if results.errors.len() < MAX_PROJECT_ERRORS {
+                        results.errors.insert(path, error);
+                    } else {
+                        results.truncated = true;
+                    }
                     continue;
                 }
             }
         };
-        let found = search.find_cancellable(&source.text, cancellation);
+        let mut found = search.find_limited(&source.text, cancellation, MAX_PROJECT_MATCHES - retained_matches + 1);
         if !found.is_empty() {
+            let bytes = source.text.len()
+                + match &source.disk {
+                    FileState::Present(bytes) => bytes.len(),
+                    _ => 0,
+                };
+            if bytes > MAX_PROJECT_SOURCE_BYTES - retained_bytes {
+                results.truncated = true;
+                break;
+            }
+            if found.len() > MAX_PROJECT_MATCHES - retained_matches {
+                results.truncated = true;
+                found.truncate(MAX_PROJECT_MATCHES - retained_matches);
+            }
+            if found.is_empty() {
+                break;
+            }
+            retained_bytes += bytes;
+            retained_matches += found.len();
             let matches = describe_matches_cancellable(&source.text, found, cancellation);
             results.files.push(FileResults {
                 path,
                 source: source.into_owned(),
                 matches,
             });
+            if results.truncated {
+                break;
+            }
         }
     }
     if cancellation.is_canceled() {
@@ -176,6 +219,76 @@ pub fn apply_disk_replacement(replacement: &FileReplacement) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn limited_project_results_cannot_produce_partial_replacements() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        let source = SourceSnapshot {
+            text: "x".repeat(MAX_PROJECT_MATCHES + 1),
+            disk: FileState::Missing,
+            buffer: None,
+        };
+        let results = search_project(
+            &root,
+            &root.join("build"),
+            &BTreeMap::from([(root.join("main.tex"), source)]),
+            Query {
+                text: "x".into(),
+                ..Query::default()
+            },
+            &Cancellation::default(),
+        )
+        .unwrap();
+        assert_eq!(results.count(), MAX_PROJECT_MATCHES);
+        assert!(results.truncated);
+        assert!(results.preview_cancellable("y", &Cancellation::default()).is_none());
+        assert!(results.preview("y").files.is_empty());
+    }
+
+    #[test]
+    fn project_source_and_replacement_preview_bytes_are_bounded() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        let query = Query {
+            text: "x".into(),
+            ..Query::default()
+        };
+        let source = SourceSnapshot {
+            text: "x".into(),
+            disk: FileState::Present(vec![b'x'; MAX_PROJECT_SOURCE_BYTES]),
+            buffer: None,
+        };
+        let results = search_project(
+            &root,
+            &root.join("build"),
+            &BTreeMap::from([(root.join("main.tex"), source)]),
+            query.clone(),
+            &Cancellation::default(),
+        )
+        .unwrap();
+        assert!(results.truncated);
+        assert!(results.files.is_empty());
+        let source = SourceSnapshot {
+            text: "xx".into(),
+            disk: FileState::Missing,
+            buffer: None,
+        };
+        let results = search_project(
+            &root,
+            &root.join("build"),
+            &BTreeMap::from([(root.join("main.tex"), source)]),
+            query,
+            &Cancellation::default(),
+        )
+        .unwrap();
+        assert!(!results.truncated);
+        assert!(
+            results
+                .preview_cancellable(&"y".repeat(MAX_PROJECT_SOURCE_BYTES / 2), &Cancellation::default())
+                .is_none()
+        );
+    }
     use crate::describe_matches;
     use ligature_buffer::Buffer;
 

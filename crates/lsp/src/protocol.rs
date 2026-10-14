@@ -329,9 +329,11 @@ pub fn diagnostics(text: &str, path: &Path, items: &Value, encoding: Encoding) -
     let lines = LineIndex::new(text);
     items
         .iter()
-        .take(2000)
+        .take(ligature_diagnostics::MAX_DIAGNOSTICS)
         .filter_map(|item| {
             let range = lines.byte_range(&item["range"], encoding)?;
+            let mut message = item["message"].as_str()?.to_owned();
+            ligature_diagnostics::bound_message(&mut message);
             Some(Diagnostic {
                 severity: match item["severity"].as_u64().unwrap_or(1) {
                     1 => Severity::Error,
@@ -339,7 +341,7 @@ pub fn diagnostics(text: &str, path: &Path, items: &Value, encoding: Encoding) -
                     _ => Severity::Information,
                 },
                 provider: ligature_diagnostics::Provider::LanguageServer("Texlab".into()),
-                message: item["message"].as_str()?.into(),
+                message,
                 path: Some(path.into()),
                 range: Some(SourceRange::Text {
                     start: lines.scalar_position(range.start),

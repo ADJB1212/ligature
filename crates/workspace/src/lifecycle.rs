@@ -37,11 +37,16 @@ pub(super) enum Intent {
 }
 
 impl Workspace {
-    fn close_state(&self, cx: &App) -> (EntityId, Revision, bool) {
+    fn close_state(&self, cx: &App) -> (EntityId, Revision, bool, Option<String>) {
         (
             self.editor.entity_id(),
             self.editor.read(cx).state().buffer().revision(),
             self.document.as_ref().is_some_and(|document| document.diverged),
+            self.editor
+                .read(cx)
+                .state()
+                .marked_range()
+                .map(|_| self.editor.read(cx).state().text().to_owned()),
         )
     }
 
@@ -58,6 +63,9 @@ impl Workspace {
             let mut result = perform(&this, cx, intent.clone()).await;
             if result.is_ok() && !matches!(intent, Intent::Quit | Intent::CloseWindow | Intent::Restore | Intent::ExportPdf) {
                 result = super::session::save_session(&this, cx).await;
+                if result.is_ok() {
+                    result = super::recovery::flush(&this, cx).await;
+                }
             }
             this.update_in(cx, |workspace, window, cx| {
                 workspace.busy = false;
@@ -252,30 +260,63 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
                     .map_err(|error| error.to_string())?;
                 super::session::save_session(this, cx).await?;
                 super::builds::shutdown(this, cx).await?;
+                let (watchers, client) = this
+                    .update_in(cx, |workspace, window, cx| {
+                        let unchanged = workspace.tabs.len() == confirmed.len()
+                            && workspace.tabs.iter().enumerate().all(|(index, tab)| {
+                                let state = if index == workspace.active_tab {
+                                    workspace.close_state(cx)
+                                } else if let Some(tab) = tab {
+                                    (
+                                        tab.editor.entity_id(),
+                                        tab.editor.read(cx).state().buffer().revision(),
+                                        tab.document.diverged,
+                                        tab.editor
+                                            .read(cx)
+                                            .state()
+                                            .marked_range()
+                                            .map(|_| tab.editor.read(cx).state().text().to_owned()),
+                                    )
+                                } else {
+                                    return false;
+                                };
+                                state == confirmed[index]
+                            });
+                        if !unchanged {
+                            return Err("A document changed while closing. Review your changes and close again.".to_owned());
+                        }
+                        workspace.project_task = None;
+                        workspace.project_cancel.cancel();
+                        workspace.search.cancel();
+                        workspace.semantic_ui.cancel();
+                        workspace.bundle_ui.cancel();
+                        workspace.preview.update(cx, |preview, cx| preview.clear(cx));
+                        workspace.build_log.update(cx, |editor, _| editor.cancel_background_work());
+                        let client = workspace.language_ui.stop();
+                        let mut watchers = Vec::new();
+                        workspace.watch_task = None;
+                        watchers.extend(workspace.watcher.take());
+                        for tab in workspace.tabs.iter_mut().flatten() {
+                            tab.watch_task = None;
+                            watchers.extend(tab.watcher.take());
+                        }
+                        while workspace.document.is_some() {
+                            workspace.close_document(window, cx);
+                        }
+                        workspace.build_ui.reset();
+                        Ok((watchers, client))
+                    })
+                    .map_err(|error| error.to_string())??;
+                super::recovery::flush(this, cx).await?;
+                cx.background_executor()
+                    .spawn(async move {
+                        drop(watchers);
+                        if let Some(client) = client {
+                            client.shutdown();
+                        }
+                    })
+                    .await;
                 this.update_in(cx, |workspace, window, cx| {
-                    let unchanged = workspace.tabs.len() == confirmed.len()
-                        && workspace.tabs.iter().enumerate().all(|(index, tab)| {
-                            let state = if index == workspace.active_tab {
-                                workspace.close_state(cx)
-                            } else if let Some(tab) = tab {
-                                (
-                                    tab.editor.entity_id(),
-                                    tab.editor.read(cx).state().buffer().revision(),
-                                    tab.document.diverged,
-                                )
-                            } else {
-                                return false;
-                            };
-                            state == confirmed[index]
-                        });
-                    if !unchanged {
-                        return Err("A document changed while closing. Review your changes and close again.".to_owned());
-                    }
-                    workspace.project_task = None;
-                    workspace.search.cancel();
-                    while workspace.document.is_some() {
-                        workspace.close_document(window, cx);
-                    }
                     if matches!(intent, Intent::Quit) {
                         cx.quit();
                     } else {
@@ -284,9 +325,8 @@ async fn perform(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext, inte
                         }
                         window.remove_window();
                     }
-                    Ok(())
                 })
-                .map_err(|error| error.to_string())??;
+                .map_err(|error| error.to_string())?;
             } else if confirm_discard(this, cx).await? {
                 this.update_in(cx, |workspace, window, cx| workspace.close_document(window, cx))
                     .map_err(|error| error.to_string())?;
@@ -436,6 +476,7 @@ pub(super) async fn save(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowConte
         workspace.language_saved(cx);
     })
     .map_err(|err| err.to_string())?;
+    super::recovery::flush(this, cx).await?;
     Ok(true)
 }
 

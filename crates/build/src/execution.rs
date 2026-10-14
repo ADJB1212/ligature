@@ -126,6 +126,7 @@ fn merge_diagnostics(existing: &mut Vec<Diagnostic>, parsed: Vec<Diagnostic>, te
         .collect();
     drop(seen);
     existing.extend(parsed.into_iter().zip(keep).filter_map(|(diagnostic, keep)| keep.then_some(diagnostic)));
+    existing.truncate(ligature_diagnostics::MAX_DIAGNOSTICS);
 }
 
 impl BuildJob {

@@ -337,7 +337,7 @@ fn unopened_file_changes_refresh_references_and_bibliography_entries() {
     });
 }
 
-fn start(cx: &mut TestAppContext, window: WindowHandle<Workspace>, intent: Intent) {
+pub(super) fn start(cx: &mut TestAppContext, window: WindowHandle<Workspace>, intent: Intent) {
     cx.update_window(window.into(), |root, window, cx| {
         root.downcast::<Workspace>()
             .unwrap()

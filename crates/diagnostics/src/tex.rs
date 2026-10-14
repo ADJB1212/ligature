@@ -15,6 +15,9 @@ pub fn parse_tex(log: &str, working_directory: &Path, root_document: &Path, buil
         build,
     };
     for line in log.lines() {
+        if parser.diagnostics.len() >= crate::MAX_DIAGNOSTICS {
+            break;
+        }
         parser.line(line.trim_end());
     }
     parser.flush();
@@ -47,10 +50,13 @@ impl Parser<'_> {
     }
 
     fn flush(&mut self) {
-        if let Some(diagnostic) = self.pending.take()
-            && self.seen.insert(diagnostic.clone())
+        if let Some(mut diagnostic) = self.pending.take()
+            && self.diagnostics.len() < crate::MAX_DIAGNOSTICS
         {
-            self.diagnostics.push(diagnostic);
+            crate::bound_message(&mut diagnostic.message);
+            if self.seen.insert(diagnostic.clone()) {
+                self.diagnostics.push(diagnostic);
+            }
         }
     }
 
@@ -121,10 +127,13 @@ impl Parser<'_> {
                 pending.message.push(' ');
                 pending.message.push_str(trimmed);
                 if pending.severity == Severity::Warning {
-                    pending.range = line_range(&pending.message);
+                    pending.range = line_range(&pending.message).or_else(|| pending.range.clone());
+                    crate::bound_message(&mut pending.message);
                     if trimmed.ends_with('.') {
                         self.flush();
                     }
+                } else {
+                    crate::bound_message(&mut pending.message);
                 }
                 return;
             }
@@ -227,6 +236,23 @@ fn resolve(directory: &Path, path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn log_diagnostic_counts_and_multiline_messages_are_bounded() {
+        use std::fmt::Write;
+        let mut log = String::new();
+        for index in 0..crate::MAX_DIAGNOSTICS + 10 {
+            writeln!(log, "error: failure {index}").unwrap();
+        }
+        let diagnostics = super::parse_tex(&log, std::path::Path::new("/p"), std::path::Path::new("main.tex"), crate::BuildId(1));
+        assert_eq!(diagnostics.len(), crate::MAX_DIAGNOSTICS);
+        let log = format!("! Failure\n {}\nl.1 bad\n", "猫".repeat(crate::MAX_MESSAGE_BYTES));
+        let diagnostics = super::parse_tex(&log, std::path::Path::new("/p"), std::path::Path::new("main.tex"), crate::BuildId(1));
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.len() <= crate::MAX_MESSAGE_BYTES);
+        let log = format!("LaTeX Warning: {}\n on input line 42.\n", "猫".repeat(crate::MAX_MESSAGE_BYTES));
+        let diagnostics = super::parse_tex(&log, std::path::Path::new("/p"), std::path::Path::new("main.tex"), crate::BuildId(1));
+        assert_eq!(diagnostics[0].range, Some(crate::SourceRange::Lines { start: 42, end: 42 }));
+    }
     use super::*;
 
     #[test]

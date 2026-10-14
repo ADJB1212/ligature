@@ -6,6 +6,7 @@ use crate::{Workspace, lifecycle::Intent};
 impl Workspace {
     pub fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.session_path = Session::default_path();
+        self.recovery.store = ligature_settings::RecoveryStore::default_path().map(ligature_settings::RecoveryStore::new);
         self.start(Intent::Restore, window, cx);
     }
 
@@ -49,8 +50,14 @@ pub(super) async fn restore(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowCo
     let Some(path) = path else {
         return Ok(());
     };
-    let session = cx.background_executor().spawn(async move { Session::load(&path) }).await?;
     let mut errors = Vec::new();
+    let session = match cx.background_executor().spawn(async move { Session::load(&path) }).await {
+        Ok(session) => session,
+        Err(error) => {
+            errors.push(error);
+            Session::default()
+        }
+    };
     if let Some(path) = session.project
         && let Err(error) = super::project::load_project(this, cx, path).await
     {
@@ -80,5 +87,6 @@ pub(super) async fn restore(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowCo
         cx.notify();
     })
     .map_err(|error| error.to_string())?;
+    super::recovery::restore(this, cx).await?;
     Ok(())
 }
