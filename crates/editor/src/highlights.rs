@@ -21,22 +21,8 @@ impl Highlights {
     }
 
     pub fn update(&mut self, text: Arc<str>) {
-        let mut start = self.text.bytes().zip(text.bytes()).take_while(|(old, new)| old == new).count();
-        while !self.text.is_char_boundary(start) || !text.is_char_boundary(start) {
-            start -= 1;
-        }
-        let suffix_limit = (self.text.len() - start).min(text.len() - start);
-        let mut suffix = self
-            .text
-            .bytes()
-            .rev()
-            .zip(text.bytes().rev())
-            .take(suffix_limit)
-            .take_while(|(old, new)| old == new)
-            .count();
-        while !self.text.is_char_boundary(self.text.len() - suffix) || !text.is_char_boundary(text.len() - suffix) {
-            suffix -= 1;
-        }
+        let start = ligature_syntax::common_prefix(&self.text, &text);
+        let suffix = ligature_syntax::common_suffix(&self.text[start..], &text[start..]);
         let old_end = self.text.len() - suffix;
         let new_end = text.len() - suffix;
         let inserted_newline = text[start..new_end].contains('\n');

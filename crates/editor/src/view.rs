@@ -51,6 +51,7 @@ pub struct Editor {
     font_family: Option<SharedString>,
     font_size: Pixels,
     line_height: Pixels,
+    metrics: Option<Metrics>,
     preferred_x: Option<Pixels>,
     reveal_caret: bool,
     caret_on: bool,
@@ -94,6 +95,7 @@ impl Editor {
             font_family: None,
             font_size: typography::editor_size(),
             line_height: typography::editor_line_height(),
+            metrics: None,
             preferred_x: None,
             reveal_caret: true,
             caret_on: true,
@@ -359,6 +361,7 @@ impl Editor {
         self.font_size = font_size.max(px(8.0));
         self.line_height = self.font_size * 1.5;
         self.font = None;
+        self.metrics = None;
         self.preferred_x = None;
         self.reveal_caret = true;
         cx.notify();
@@ -485,10 +488,19 @@ impl Editor {
         self.changed(window, cx);
     }
 
+    fn measure(&self, window: &Window) -> Metrics {
+        self.metrics.unwrap_or_else(|| Metrics {
+            space: self.shape_text(" ".into(), window, false).width.max(px(1.0)),
+            digit: (0..=9)
+                .map(|digit| self.shape_text(digit.to_string().into(), window, true).width)
+                .fold(px(0.0), Pixels::max),
+        })
+    }
+
     fn shape(&self, line: usize, window: &Window) -> LayoutLine {
         let range = self.state.line_range(line);
         let text = &self.state.text()[range.clone()];
-        let tab_width = self.shape_text(" ".into(), window, false).width.max(px(1.0)) * self.state.tab_size() as f32;
+        let tab_width = self.measure(window).space * self.state.tab_size() as f32;
         let mut pieces = Vec::new();
         let mut boundaries = Vec::new();
         let mut x = px(0.0);
@@ -701,6 +713,12 @@ impl Editor {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Metrics {
+    space: Pixels,
+    digit: Pixels,
+}
+
 struct LayoutLine {
     range: Range<usize>,
     pieces: Vec<(Pixels, ShapedLine)>,
@@ -819,15 +837,18 @@ impl Editor {
     fn layout(&mut self, bounds: Bounds<Pixels>, window: &mut Window) -> Vec<(usize, LayoutLine, ShapedLine)> {
         let resized = self.bounds.size != bounds.size;
         self.bounds = bounds;
-        self.font = Some(window.text_style().font());
+        let font = window.text_style().font();
+        if self.font.as_ref() != Some(&font) {
+            self.font = Some(font);
+            self.metrics = None;
+        }
+        let metrics = self.measure(window);
+        self.metrics = Some(metrics);
         self.gutter = if self.read_only {
             px(8.0)
         } else {
-            let digits = self.state.line_count().to_string().len().max(2);
-            let digit_width = (0..=9)
-                .map(|digit| self.shape_text(digit.to_string().into(), window, true).width)
-                .fold(px(0.0), Pixels::max);
-            px(f32::from(digit_width * digits as f32 + px(24.0)).ceil())
+            let digits = self.state.line_count().checked_ilog10().map_or(1, |log| log as usize + 1).max(2);
+            px(f32::from(metrics.digit * digits as f32 + px(24.0)).ceil())
         };
         let caret_line = self.state.line_index(self.state.caret());
         let caret = self.shape(caret_line, window);

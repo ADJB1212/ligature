@@ -17,6 +17,7 @@ mod tests;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
+    sync::Arc,
 };
 
 use gpui::{
@@ -164,6 +165,8 @@ pub struct Workspace {
     build_output_height: Pixels,
     semantic_ui: semantics::SemanticUi,
     language_ui: language::LanguageUi,
+    open_text: BTreeMap<PathBuf, (ligature_buffer::DocumentId, ligature_buffer::Revision, Arc<str>)>,
+    project_disk: Arc<std::sync::Mutex<ligature_fs::TextCache>>,
 }
 
 struct Tab {
@@ -252,6 +255,8 @@ impl Workspace {
             build_output_height: px(240.0),
             semantic_ui: semantics::SemanticUi::default(),
             language_ui: language::LanguageUi::default(),
+            open_text: BTreeMap::new(),
+            project_disk: Arc::default(),
         };
         workspace.apply_settings(cx);
         workspace.queue_semantics(cx);

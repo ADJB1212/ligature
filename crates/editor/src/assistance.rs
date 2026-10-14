@@ -439,6 +439,11 @@ impl Editor {
     }
 
     pub(super) fn render_assistance(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+        let completing = self.completion_target().is_some() && !self.assistance.candidates.is_empty();
+        let hovering = self.hover_target().is_some() && self.assistance.hover_text.is_some();
+        if !completing && !hovering {
+            return div();
+        }
         let line = self.state.line_index(self.state.caret());
         let x = self.gutter + self.shape(line, window).x_for_byte(self.state.caret()) - self.scroll.x;
         let y = self.line_height * (line + 1) as f32 - self.scroll.y;

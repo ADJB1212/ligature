@@ -235,3 +235,26 @@ fn directory_listing_sorts_directories_before_files() {
         vec![("b-folder", true), ("z-folder", true), ("a.tex", false), ("c.tex", false)]
     );
 }
+
+#[test]
+fn text_cache_shares_unchanged_text_and_rereads_rewritten_or_missing_files() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cached.tex");
+    fs::write(&path, "first").unwrap();
+    let mut cache = ligature_fs::TextCache::default();
+    let initial = cache.read(&path).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&initial, &cache.read(&path).unwrap()));
+    write_atomic(&path, "second").unwrap();
+    let updated = cache.read(&path).unwrap();
+    assert_eq!(updated.as_ref(), "second");
+    assert!(!std::sync::Arc::ptr_eq(&initial, &updated));
+    fs::write(&path, b"\xff").unwrap();
+    assert!(cache.read(&path).is_err());
+    fs::remove_file(&path).unwrap();
+    assert!(cache.read(&path).is_err());
+    fs::write(&path, "recreated").unwrap();
+    assert_eq!(cache.read(&path).unwrap().as_ref(), "recreated");
+    cache.prune();
+    cache.prune();
+    assert_eq!(cache.read(&path).unwrap().as_ref(), "recreated");
+}

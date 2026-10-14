@@ -1,10 +1,12 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
 use gpui::{AsyncWindowContext, Context, IntoElement, PathPromptOptions, WeakEntity, Window, div, prelude::*, px};
+use ligature_fs::TextCache;
 use ligature_project::{IncludeGraph, Project};
 use ligature_settings::Settings;
 use ligature_theme::{colors, spacing};
@@ -45,7 +47,13 @@ pub(super) async fn load_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWin
             let mut project = Project::open(&path)?;
             let mut settings = configuration.settings_for(Some(&project.root));
             let mut errors = configuration_errors;
-            errors.extend(discover_root(&mut project, &mut settings, None, &BTreeMap::new()));
+            errors.extend(discover_root(
+                &mut project,
+                &mut settings,
+                None,
+                &BTreeMap::new(),
+                &mut TextCache::default(),
+            ));
             Ok::<_, String>((project, settings, errors))
         })
         .await?;
@@ -78,7 +86,11 @@ pub(super) async fn load_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWin
     Ok(())
 }
 
-pub(super) fn discover_root(project: &mut Project, settings: &mut Settings, active: Option<&Path>, text: &BTreeMap<PathBuf, String>) -> Vec<String> {
+pub(super) type OpenText = BTreeMap<PathBuf, Arc<str>>;
+
+pub(super) fn discover_root(
+    project: &mut Project, settings: &mut Settings, active: Option<&Path>, text: &OpenText, cache: &mut TextCache,
+) -> Vec<String> {
     project.root_document = None;
     let mut errors = Vec::new();
     if let Some(root) = &settings.root_document
@@ -90,21 +102,40 @@ pub(super) fn discover_root(project: &mut Project, settings: &mut Settings, acti
     project.discover_root_document(&project.root.join(&settings.build.output_directory), active, |path| {
         text.get(path)
             .cloned()
-            .map_or_else(|| ligature_fs::read(path).map(|file| file.text).map_err(|error| error.to_string()), Ok)
+            .map_or_else(|| cache.read(path).map_err(|error| error.to_string()), Ok)
     });
     errors
 }
 
 impl Workspace {
-    pub(super) fn project_text(&self, cx: &gpui::App) -> BTreeMap<PathBuf, String> {
-        let mut text = BTreeMap::new();
-        if let Some(path) = self.document.as_ref().and_then(|document| document.path.as_ref()) {
-            text.insert(path.clone(), self.editor.read(cx).state().text().to_owned());
+    /// Immutable text of an open buffer, reused until the buffer's revision changes.
+    pub(super) fn cached_text(&mut self, path: PathBuf, editor: &ligature_editor::Editor) -> Arc<str> {
+        let buffer = editor.state().buffer();
+        let version = (buffer.id(), buffer.revision());
+        let source = self
+            .open_text
+            .entry(path)
+            .or_insert_with(|| (version.0, version.1, Arc::from(buffer.text())));
+        if (source.0, source.1) != version {
+            *source = (version.0, version.1, Arc::from(buffer.text()));
         }
-        for tab in self.tabs.iter().flatten() {
-            if let Some(path) = &tab.document.path {
-                text.insert(path.clone(), tab.editor.read(cx).state().text().to_owned());
-            }
+        Arc::clone(&source.2)
+    }
+
+    pub(super) fn project_text(&mut self, cx: &gpui::App) -> OpenText {
+        let mut text = BTreeMap::new();
+        if let Some(path) = self.document.as_ref().and_then(|document| document.path.clone()) {
+            let editor = self.editor.clone();
+            text.insert(path.clone(), self.cached_text(path, editor.read(cx)));
+        }
+        let tabs: Vec<_> = self
+            .tabs
+            .iter()
+            .flatten()
+            .filter_map(|tab| tab.document.path.clone().map(|path| (path, tab.editor.clone())))
+            .collect();
+        for (path, editor) in tabs {
+            text.insert(path.clone(), self.cached_text(path, editor.read(cx)));
         }
         text
     }
@@ -157,6 +188,7 @@ impl Workspace {
     }
 
     pub(super) fn start_project_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cache = Arc::clone(&self.project_disk);
         self.project_task = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
                 let snapshot = this.update_in(cx, |workspace, _, cx| {
@@ -189,10 +221,12 @@ impl Workspace {
                 let expected_root = root.clone();
                 let expected_active = active.clone();
                 let expected_settings = settings.clone();
+                let disk = Arc::clone(&cache);
                 let (directories, graph, root_document, settings, errors, stale_pdf, stale_diagnostics) = cx
                     .background_executor()
                     .spawn(async move {
-                        errors.extend(discover_root(&mut project, &mut settings, active.as_deref(), &text));
+                        let mut disk = disk.lock().unwrap();
+                        errors.extend(discover_root(&mut project, &mut settings, active.as_deref(), &text, &mut disk));
                         let output = root.join(&settings.build.output_directory);
                         let directories: BTreeMap<_, _> = expanded
                             .into_iter()
@@ -205,20 +239,18 @@ impl Workspace {
                             IncludeGraph::load_with(&root.join(path), |path| {
                                 text.get(path)
                                     .cloned()
-                                    .map_or_else(|| ligature_fs::read(path).map(|file| file.text).map_err(|error| error.to_string()), Ok)
+                                    .map_or_else(|| disk.read(path).map_err(|error| error.to_string()), Ok)
                             })
                         });
+                        disk.prune();
+                        drop(disk);
                         let stale_pdf = artifacts.map(|artifacts| {
                             let stale = !artifacts.sources.matches_disk(&root, &output);
                             (artifacts.pdf, stale)
                         });
                         let stale_diagnostics = diagnostic_paths
                             .into_iter()
-                            .filter(|path| {
-                                diagnostic_sources
-                                    .as_ref()
-                                    .is_none_or(|sources| std::fs::read_to_string(path).ok().is_none_or(|text| !sources.matches_text(path, &text)))
-                            })
+                            .filter(|path| diagnostic_sources.as_ref().is_none_or(|sources| !sources.matches_disk_file(path)))
                             .collect();
                         (directories, graph, project.root_document, settings, errors, stale_pdf, stale_diagnostics)
                     })

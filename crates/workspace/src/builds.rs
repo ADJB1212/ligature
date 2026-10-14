@@ -701,7 +701,13 @@ async fn prepare_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowConte
         .spawn(async move {
             let mut project = project.ok_or("Open a TeX document before building")?;
             let mut settings = settings;
-            super::project::discover_root(&mut project, &mut settings, active.as_deref(), &text);
+            super::project::discover_root(
+                &mut project,
+                &mut settings,
+                active.as_deref(),
+                &text,
+                &mut ligature_fs::TextCache::default(),
+            );
             let preparation = BuildRequest::prepare(&project, &settings.build, &dirty)?;
             Ok::<_, String>((project, preparation))
         })

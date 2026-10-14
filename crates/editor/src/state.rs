@@ -473,19 +473,27 @@ pub(crate) fn snap(text: &str, offset: usize) -> usize {
     }
 }
 
+/// UTF-16 units contributed by one UTF-8 byte: lead bytes count one, four-byte
+/// leads count two, continuation bytes count zero.
+#[inline]
+fn utf16_units(byte: u8) -> usize {
+    usize::from(byte & 0xC0 != 0x80) + usize::from(byte >= 0xF0)
+}
+
 pub(crate) fn byte_offset(text: &str, utf16: usize) -> usize {
     let mut units = 0;
-    for (offset, ch) in text.char_indices() {
-        if units + ch.len_utf16() > utf16 {
+    for (offset, &byte) in text.as_bytes().iter().enumerate() {
+        let width = utf16_units(byte);
+        if width > 0 && units + width > utf16 {
             return offset;
         }
-        units += ch.len_utf16();
+        units += width;
     }
     text.len()
 }
 
 pub(crate) fn utf16_offset(text: &str, byte: usize) -> usize {
-    text[..byte].encode_utf16().count()
+    text.as_bytes()[..byte].iter().map(|&byte| utf16_units(byte)).sum()
 }
 
 fn visual_column(text: &str, tab_size: usize) -> usize {

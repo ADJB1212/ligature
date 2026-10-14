@@ -1,4 +1,4 @@
-use crate::{FileState, resolve};
+use crate::{FileState, Signature, resolve};
 use notify::{Config, Event, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     collections::BTreeMap,
@@ -14,25 +14,36 @@ struct Subscription {
     sender: async_channel::Sender<FileState>,
 }
 
-type Subscriptions = Arc<Mutex<BTreeMap<PathBuf, Vec<Subscription>>>>;
+#[derive(Default)]
+struct Watched {
+    signature: Option<Signature>,
+    subscribers: Vec<Subscription>,
+}
+
+type Subscriptions = Arc<Mutex<BTreeMap<PathBuf, Watched>>>;
 
 fn reconcile(subscriptions: &Subscriptions, event: notify::Result<Event>) {
     if matches!(&event, Ok(event) if matches!(event.kind, EventKind::Access(_))) {
         return;
     }
     let mut subscriptions = subscriptions.lock().unwrap();
-    for (path, subscribers) in subscriptions.iter_mut() {
+    for (path, watched) in subscriptions.iter_mut() {
         if let Ok(event) = &event
             && !event.paths.is_empty()
             && !event.paths.iter().any(|changed| path.starts_with(changed) || changed.starts_with(path))
         {
             continue;
         }
+        let signature = Signature::of(path).ok();
+        if signature.is_some() && signature == watched.signature {
+            continue;
+        }
         let current = FileState::read(path);
-        for subscriber in subscribers {
+        watched.signature = signature;
+        for subscriber in &mut watched.subscribers {
             if current != subscriber.previous {
                 subscriber.previous = current.clone();
-                let _ = subscriber.sender.force_send(current.clone());
+                let _ = subscriber.sender.force_send(subscriber.previous.clone());
             }
         }
     }
@@ -157,11 +168,20 @@ impl FileWatcher {
             let mut service = service.lock().unwrap();
             service.watch(parent)?;
             let mut subscriptions = service.subscriptions.lock().unwrap();
+            let signature = Signature::of(&path).ok();
             let current = FileState::read(&path);
             if current != initial {
                 let _ = sender.try_send(current.clone());
             }
-            subscriptions.entry(path.clone()).or_default().push(Subscription {
+            let watched = subscriptions.entry(path.clone()).or_default();
+            watched.signature = signature;
+            for subscriber in &mut watched.subscribers {
+                if current != subscriber.previous {
+                    subscriber.previous = current.clone();
+                    let _ = subscriber.sender.force_send(subscriber.previous.clone());
+                }
+            }
+            watched.subscribers.push(Subscription {
                 previous: current,
                 sender: sender.clone(),
             });
@@ -185,9 +205,9 @@ impl Drop for FileWatcher {
         let mut service = self.service.lock().unwrap();
         {
             let mut subscriptions = service.subscriptions.lock().unwrap();
-            let subscribers = subscriptions.get_mut(&self.path).unwrap();
-            subscribers.retain(|subscriber| !subscriber.sender.same_channel(&self.sender));
-            if subscribers.is_empty() {
+            let watched = subscriptions.get_mut(&self.path).unwrap();
+            watched.subscribers.retain(|subscriber| !subscriber.sender.same_channel(&self.sender));
+            if watched.subscribers.is_empty() {
                 subscriptions.remove(&self.path);
             }
         }

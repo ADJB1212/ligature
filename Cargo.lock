@@ -3308,6 +3308,7 @@ name = "ligature-build"
 version = "0.0.1"
 dependencies = [
  "ligature-diagnostics",
+ "ligature-fs",
  "ligature-pdf",
  "ligature-project",
  "ligature-settings",

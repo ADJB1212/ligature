@@ -185,7 +185,7 @@ impl Client {
         thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             loop {
-                let message = match read_frame(&mut reader) {
+                let mut message = match read_frame(&mut reader) {
                     Ok(Some(message)) => message,
                     Ok(None) => {
                         fail(&pending, &failure, &read_events, "Texlab exited. Use Restart Language Server.".into());
@@ -219,9 +219,10 @@ impl Client {
                         };
                         let _ = writer.send(response);
                     } else {
+                        let method = method.to_owned();
                         let _ = read_events.try_send(Event::Notification {
-                            method: method.into(),
-                            params: message["params"].clone(),
+                            method,
+                            params: message["params"].take(),
                         });
                     }
                 } else if let Some(id) = message["id"].as_u64()
@@ -230,7 +231,7 @@ impl Client {
                     let result = if message.get("error").is_some() {
                         Err(message["error"].to_string())
                     } else {
-                        Ok(message["result"].clone())
+                        Ok(message["result"].take())
                     };
                     let _ = sender.send(result);
                 }

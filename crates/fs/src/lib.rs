@@ -5,10 +5,12 @@ mod watcher;
 pub use watcher::FileWatcher;
 
 use std::{
+    collections::{HashMap, HashSet},
     error::Error,
     fmt, fs,
     io::{self, Write},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 #[derive(Debug)]
@@ -160,5 +162,65 @@ impl FileState {
             Err(err) if err.kind() == io::ErrorKind::NotFound => Self::Missing,
             Err(err) => Self::Unreadable(error(path, "read", err).to_string()),
         }
+    }
+}
+
+/// Identity, size, and timestamps that change whenever a file's contents are rewritten.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Signature {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    changed: (i64, i64),
+}
+
+impl Signature {
+    pub fn of(path: &Path) -> io::Result<Self> {
+        Ok(Self::from_metadata(&fs::metadata(path)?))
+    }
+
+    fn from_metadata(metadata: &fs::Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+            #[cfg(unix)]
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
+}
+
+/// Reuses previously read UTF-8 text while a file's signature is unchanged.
+#[derive(Debug, Default)]
+pub struct TextCache {
+    entries: HashMap<PathBuf, (Signature, Arc<str>)>,
+    touched: HashSet<PathBuf>,
+}
+
+impl TextCache {
+    pub fn read(&mut self, path: &Path) -> Result<Arc<str>, FileError> {
+        let signature = Signature::of(path).map_err(|err| error(path, "read", err))?;
+        if let Some((cached, text)) = self.entries.get(path)
+            && *cached == signature
+        {
+            self.touched.insert(path.to_owned());
+            return Ok(Arc::clone(text));
+        }
+        let bytes = fs::read(path).map_err(|err| error(path, "read", err))?;
+        let text: Arc<str> = decode(path, bytes)?.into();
+        self.touched.insert(path.to_owned());
+        self.entries.insert(path.to_owned(), (signature, Arc::clone(&text)));
+        Ok(text)
+    }
+
+    /// Drops entries not read since the previous call.
+    pub fn prune(&mut self) {
+        let touched = std::mem::take(&mut self.touched);
+        self.entries.retain(|path, _| touched.contains(path));
     }
 }

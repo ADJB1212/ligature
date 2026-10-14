@@ -73,10 +73,7 @@ impl Snapshot {
     }
 
     pub fn refresh(&self, revision: Revision, text: Arc<str>) -> Self {
-        let mut start = self.text.bytes().zip(text.bytes()).take_while(|(old, new)| old == new).count();
-        while !self.text.is_char_boundary(start) || !text.is_char_boundary(start) {
-            start -= 1;
-        }
+        let start = common_prefix(&self.text, &text);
         self.reparse(revision, text, start)
     }
 
@@ -104,6 +101,48 @@ impl Snapshot {
             reparsed,
         }
     }
+}
+
+/// Length of the longest shared prefix that ends on a character boundary in both texts.
+pub fn common_prefix(old: &str, new: &str) -> usize {
+    let mut start = common_bytes(old.as_bytes(), new.as_bytes());
+    while !old.is_char_boundary(start) || !new.is_char_boundary(start) {
+        start -= 1;
+    }
+    start
+}
+
+/// Length of the longest shared suffix that ends on a character boundary in both texts.
+pub fn common_suffix(old: &str, new: &str) -> usize {
+    let limit = old.len().min(new.len());
+    let (old_tail, new_tail) = (&old.as_bytes()[old.len() - limit..], &new.as_bytes()[new.len() - limit..]);
+    let mut suffix = 0;
+    for (block_old, block_new) in old_tail.rchunks(BLOCK).zip(new_tail.rchunks(BLOCK)) {
+        if block_old == block_new {
+            suffix += block_old.len();
+            continue;
+        }
+        suffix += block_old.iter().rev().zip(block_new.iter().rev()).take_while(|(a, b)| a == b).count();
+        break;
+    }
+    while !old.is_char_boundary(old.len() - suffix) || !new.is_char_boundary(new.len() - suffix) {
+        suffix -= 1;
+    }
+    suffix
+}
+
+const BLOCK: usize = 64;
+
+fn common_bytes(old: &[u8], new: &[u8]) -> usize {
+    let mut matched = 0;
+    for (block_old, block_new) in old.chunks(BLOCK).zip(new.chunks(BLOCK)) {
+        if block_old == block_new {
+            matched += block_old.len();
+            continue;
+        }
+        return matched + block_old.iter().zip(block_new).take_while(|(a, b)| a == b).count();
+    }
+    matched
 }
 
 fn lex(language: Language, text: &str, offset: usize) -> (Vec<Token>, Vec<usize>) {
@@ -308,6 +347,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn shared_prefix_and_suffix_lengths_stop_on_character_boundaries_across_blocks() {
+        let long = "x".repeat(200);
+        let old = format!("{long}猫é{long}");
+        let new = format!("{long}猫ü{long}");
+        let prefix = common_prefix(&old, &new);
+        assert_eq!(prefix, 203);
+        assert_eq!(common_suffix(&old[prefix..], &new[prefix..]), 200);
+        assert_eq!(common_prefix("猫a", "犬a"), 0);
+        assert_eq!(common_suffix("a猫", "a犬"), 0);
+        assert_eq!(common_prefix("same", "same"), 4);
+        assert_eq!(common_suffix("abc", "xbc"), 2);
+        assert_eq!(common_suffix("", "abc"), 0);
+        assert_eq!(common_suffix("abc", ""), 0);
     }
 
     #[test]

@@ -143,7 +143,7 @@ fn include_graphs_add_the_default_extension_and_keep_the_requested_text() {
 
 #[test]
 fn a_file_that_includes_itself_is_visited_once() {
-    let graph = IncludeGraph::load_with(Path::new("/p/main.tex"), |_| Ok("\\input{main}".into()));
+    let graph = IncludeGraph::load_with(Path::new("/p/main.tex"), |_| Ok("\\input{main}"));
     assert_eq!(graph.files.len(), 1);
     assert!(graph.files[Path::new("/p/main.tex")][0].resolved);
 }

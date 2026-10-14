@@ -6,13 +6,15 @@ use crate::{IncludeGraph, Project, eligible_search_path, search_files};
 
 impl Project {
     /// An active standalone document takes precedence over the existing configured root.
-    pub fn discover_root_document(&mut self, output_directory: &Path, active: Option<&Path>, mut read: impl FnMut(&Path) -> Result<String, String>) {
+    pub fn discover_root_document<T: AsRef<str> + Clone>(
+        &mut self, output_directory: &Path, active: Option<&Path>, mut read: impl FnMut(&Path) -> Result<T, String>,
+    ) {
         let active = active.filter(|path| eligible_search_path(&self.root, path, output_directory) && tex_file(path));
         let mut text = BTreeMap::new();
         if let Some(path) = active
             && let Ok(source) = read(path)
         {
-            let standalone = has_document_class(&source);
+            let standalone = has_document_class(source.as_ref());
             text.insert(path.to_owned(), source);
             if standalone && self.set_root_document(path).is_ok() {
                 return;
@@ -35,7 +37,7 @@ impl Project {
         }
         let mut candidates: Vec<_> = files
             .iter()
-            .filter(|path| text.get(*path).is_some_and(|source| has_document_class(source)))
+            .filter(|path| text.get(*path).is_some_and(|source| has_document_class(source.as_ref())))
             .collect();
         candidates.sort_by_key(|path| {
             (
@@ -68,6 +70,9 @@ fn tex_file(path: &Path) -> bool {
 }
 
 fn has_document_class(text: &str) -> bool {
+    if !text.contains("\\documentclass") {
+        return false;
+    }
     let buffer = ligature_buffer::Buffer::new();
     let snapshot = Snapshot::parse(buffer.id(), buffer.revision(), Language::Tex, text.into());
     snapshot

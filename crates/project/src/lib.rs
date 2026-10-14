@@ -165,7 +165,7 @@ impl IncludeGraph {
             ligature_fs::read(path).map(|file| file.text).map_err(|error| error.to_string())
         })
     }
-    pub fn load_with(root: &Path, mut read: impl FnMut(&Path) -> Result<String, String>) -> Self {
+    pub fn load_with<T: AsRef<str>>(root: &Path, mut read: impl FnMut(&Path) -> Result<T, String>) -> Self {
         let mut graph = Self::default();
         let mut pending = vec![std::fs::canonicalize(root).unwrap_or_else(|_| normalize(root))];
         let mut visited = BTreeSet::new();
@@ -180,7 +180,7 @@ impl IncludeGraph {
                     continue;
                 }
             };
-            let includes = include_paths(&text)
+            let includes = include_paths(text.as_ref())
                 .into_iter()
                 .map(|requested| {
                     let mut path = source.parent().unwrap_or_else(|| Path::new(".")).join(&requested);
