@@ -5,8 +5,8 @@ use gpui::{
     WindowOptions, div, prelude::*, px, size,
 };
 use ligature_settings::{Configuration, Indentation, SaveBeforeBuild, Settings};
-use ligature_theme::{colors, spacing, typography};
-use ligature_ui::{Button, TextInput, caption, chrome_strip, hairline, inline_error, panel_header};
+use ligature_theme::{colors, spacing, typography, window_background};
+use ligature_ui::{Button, TextInput, caption, chrome_strip, hairline, inline_error};
 
 use crate::{Close, OpenSettings, Save, Workspace};
 
@@ -25,7 +25,7 @@ impl Workspace {
         let configuration = self.configuration.clone();
         let path = self.configuration_path.clone();
         let project = self.project.as_ref().map(|project| project.root.clone());
-        let bounds = Bounds::centered(None, size(px(620.0), px(720.0)), cx);
+        let bounds = Bounds::centered(None, size(px(560.0), px(640.0)), cx);
         match cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -317,6 +317,29 @@ impl SettingsView {
                 })),
         )
     }
+
+    fn scope_tab(
+        &self, id: &'static str, label: &'static str, selected: bool, cx: &mut Context<Self>,
+        switch: fn(&mut SettingsView, &mut Window, &mut Context<SettingsView>),
+    ) -> gpui::Div {
+        let colors = colors();
+        div()
+            .h_full()
+            .flex()
+            .items_center()
+            .px(spacing::small())
+            .border_b_2()
+            .border_color(if selected { colors.focus } else { gpui::transparent_black() })
+            .when(selected, |tab| tab.bg(colors.background))
+            .when(!selected, |tab| tab.hover(|style| style.bg(colors.hover)))
+            .child(
+                Button::new(id, label)
+                    .quiet()
+                    .selected(selected)
+                    .disabled(self.saving)
+                    .on_click(cx.listener(move |view, _, window, cx| switch(view, window, cx))),
+            )
+    }
 }
 
 fn row(label: &'static str, control: impl IntoElement) -> gpui::Div {
@@ -324,21 +347,41 @@ fn row(label: &'static str, control: impl IntoElement) -> gpui::Div {
         .flex()
         .items_center()
         .gap(spacing::large())
-        .child(div().w(px(210.0)).flex_shrink_0().child(label))
+        .py(spacing::small())
+        .child(div().w(px(168.0)).flex_shrink_0().text_color(colors().muted_text).child(label))
         .child(div().flex_1().min_w(px(0.0)).child(control))
 }
 
 fn section(title: &'static str) -> gpui::Div {
+    div().flex().flex_col().child(
+        div()
+            .pb(spacing::small())
+            .text_size(typography::small_size())
+            .line_height(typography::line_height())
+            .text_color(colors().muted_text)
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .child(title),
+    )
+}
+
+fn choices(options: impl IntoIterator<Item = (&'static str, &'static str, bool, fn(&mut Settings))>, cx: &mut Context<SettingsView>) -> gpui::Div {
     div()
         .flex()
-        .flex_col()
-        .gap(spacing::medium())
-        .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(title))
+        .gap(spacing::small())
+        .children(options.into_iter().map(|(id, label, selected, change)| {
+            Button::new(id, label).selected(selected).on_click(cx.listener(move |view, _, _, cx| {
+                change(&mut view.fields.settings);
+                view.saved = false;
+                cx.notify();
+            }))
+        }))
 }
 
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = &self.fields.settings;
+        let indentation = settings.indentation.style;
+        let save_policy = settings.build.save_before_build;
         let controls = div()
             .flex()
             .flex_col()
@@ -346,51 +389,60 @@ impl Render for SettingsView {
             .child(
                 section("Editor")
                     .child(row("Font family", self.fields.family.clone()))
-                    .child(row("Font size (8-72 pt)", self.fields.size.clone()))
+                    .child(hairline())
+                    .child(row("Font size", self.fields.size.clone()))
+                    .child(hairline())
                     .child(row(
                         "Indentation",
-                        div().flex().gap(spacing::small()).children(
+                        choices(
                             [
-                                ("settings-spaces", "Spaces", Indentation::Spaces),
-                                ("settings-tabs", "Tabs", Indentation::Tabs),
-                            ]
-                            .map(|(id, label, style)| {
-                                Button::new(id, label)
-                                    .selected(settings.indentation.style == style)
-                                    .on_click(cx.listener(move |view, _, _, cx| {
-                                        view.fields.settings.indentation.style = style;
-                                        view.saved = false;
-                                        cx.notify();
-                                    }))
-                            }),
+                                (
+                                    "settings-spaces",
+                                    "Spaces",
+                                    indentation == Indentation::Spaces,
+                                    (|s: &mut Settings| s.indentation.style = Indentation::Spaces) as fn(&mut Settings),
+                                ),
+                                (
+                                    "settings-tabs",
+                                    "Tabs",
+                                    indentation == Indentation::Tabs,
+                                    (|s: &mut Settings| s.indentation.style = Indentation::Tabs) as fn(&mut Settings),
+                                ),
+                            ],
+                            cx,
                         ),
                     ))
-                    .child(row("Indentation width (1-16)", self.fields.width.clone())),
+                    .child(hairline())
+                    .child(row("Width", self.fields.width.clone())),
             )
-            .child(hairline())
             .child(
                 section("Build")
                     .child(row("Output folder", self.fields.output.clone()))
-                    .child(caption("Use a folder path relative to the project."))
+                    .child(div().pl(px(184.0)).child(caption("Relative to the project folder.")))
+                    .child(hairline())
                     .child(row(
                         "Save before building",
-                        div().flex().gap(spacing::small()).children(
+                        choices(
                             [
-                                ("settings-save-all", "Save all", SaveBeforeBuild::SaveAll),
-                                ("settings-clean", "Require saved", SaveBeforeBuild::RequireClean),
-                            ]
-                            .map(|(id, label, policy)| {
-                                Button::new(id, label)
-                                    .selected(settings.build.save_before_build == policy)
-                                    .on_click(cx.listener(move |view, _, _, cx| {
-                                        view.fields.settings.build.save_before_build = policy;
-                                        view.saved = false;
-                                        cx.notify();
-                                    }))
-                            }),
+                                (
+                                    "settings-save-all",
+                                    "Save all",
+                                    save_policy == SaveBeforeBuild::SaveAll,
+                                    (|s: &mut Settings| s.build.save_before_build = SaveBeforeBuild::SaveAll) as fn(&mut Settings),
+                                ),
+                                (
+                                    "settings-clean",
+                                    "Require saved",
+                                    save_policy == SaveBeforeBuild::RequireClean,
+                                    (|s: &mut Settings| s.build.save_before_build = SaveBeforeBuild::RequireClean) as fn(&mut Settings),
+                                ),
+                            ],
+                            cx,
                         ),
                     ))
-                    .child(row("Reruns (0-10)", self.fields.reruns.clone()))
+                    .child(hairline())
+                    .child(row("Reruns", self.fields.reruns.clone()))
+                    .child(hairline())
                     .child(self.toggle(
                         "settings-synctex",
                         "PDF source navigation",
@@ -398,6 +450,7 @@ impl Render for SettingsView {
                         |s| s.build.synctex = !s.build.synctex,
                         cx,
                     ))
+                    .child(hairline())
                     .child(self.toggle(
                         "settings-logs",
                         "Keep build logs",
@@ -405,6 +458,7 @@ impl Render for SettingsView {
                         |s| s.build.keep_logs = !s.build.keep_logs,
                         cx,
                     ))
+                    .child(hairline())
                     .child(self.toggle(
                         "settings-intermediates",
                         "Keep intermediate files",
@@ -412,11 +466,12 @@ impl Render for SettingsView {
                         |s| s.build.keep_intermediates = !s.build.keep_intermediates,
                         cx,
                     ))
-                    .when(self.project_scope, |view| view.child(row("Main document", self.fields.root.clone()))),
+                    .when(self.project_scope, |view| {
+                        view.child(hairline()).child(row("Main document", self.fields.root.clone()))
+                    }),
             )
-            .child(hairline())
             .child(
-                section("Language assistance")
+                section("Language")
                     .child(self.toggle(
                         "settings-server",
                         "Texlab language server",
@@ -424,6 +479,7 @@ impl Render for SettingsView {
                         |s| s.language_server.enabled = !s.language_server.enabled,
                         cx,
                     ))
+                    .child(hairline())
                     .child(self.toggle(
                         "settings-completion",
                         "Server completion",
@@ -431,6 +487,7 @@ impl Render for SettingsView {
                         |s| s.language_server.completion = !s.language_server.completion,
                         cx,
                     ))
+                    .child(hairline())
                     .child(self.toggle(
                         "settings-hover",
                         "Hover information",
@@ -445,9 +502,10 @@ impl Render for SettingsView {
             .flex_col()
             .key_context("LigatureControls LigatureSettings")
             .track_focus(&self.focus)
-            .bg(colors().surface)
+            .bg(window_background())
             .text_color(colors().text)
             .text_size(typography::control_size())
+            .line_height(typography::line_height())
             .on_action(ligature_ui::focus_next)
             .on_action(ligature_ui::focus_previous)
             .on_action(cx.listener(|view, _: &Close, window, _| {
@@ -457,25 +515,31 @@ impl Render for SettingsView {
             }))
             .on_action(cx.listener(|_, _: &OpenSettings, window, _| window.activate_window()))
             .on_action(cx.listener(|view, _: &Save, _, cx| view.save(cx)))
-            .child(panel_header("Settings"))
             .child(
                 chrome_strip()
+                    .h(px(44.0))
+                    .py(px(0.0))
                     .flex()
-                    .gap(spacing::medium())
+                    .items_stretch()
+                    .gap(spacing::large())
+                    .border_b_1()
+                    .border_color(colors().border)
+                    .child(div().flex().items_center().font_weight(gpui::FontWeight::SEMIBOLD).child("Settings"))
+                    .child(div().flex_1().min_w(px(0.0)))
                     .child(
-                        Button::new("settings-application", "Application")
-                            .selected(!self.project_scope)
-                            .disabled(self.saving)
-                            .on_click(cx.listener(|view, _, window, cx| view.switch_scope(false, window, cx))),
-                    )
-                    .when(self.project.is_some(), |view| {
-                        view.child(
-                            Button::new("settings-project", "Project")
-                                .selected(self.project_scope)
-                                .disabled(self.saving)
-                                .on_click(cx.listener(|view, _, window, cx| view.switch_scope(true, window, cx))),
-                        )
-                    }),
+                        div()
+                            .flex()
+                            .child(
+                                self.scope_tab("settings-application", "Application", !self.project_scope, cx, |view, window, cx| {
+                                    view.switch_scope(false, window, cx)
+                                }),
+                            )
+                            .when(self.project.is_some(), |view| {
+                                view.child(self.scope_tab("settings-project", "Project", self.project_scope, cx, |view, window, cx| {
+                                    view.switch_scope(true, window, cx)
+                                }))
+                            }),
+                    ),
             )
             .child(
                 div()
@@ -484,43 +548,58 @@ impl Render for SettingsView {
                     .flex_1()
                     .min_h(px(0.0))
                     .overflow_y_scroll()
-                    .p(spacing::large())
+                    .px(spacing::large())
+                    .py(spacing::large())
                     .flex()
                     .flex_col()
                     .gap(spacing::large())
+                    .when(!self.project_scope, |view| {
+                        view.child(caption("Defaults for all projects and untitled documents."))
+                    })
                     .when(self.project_scope, |view| {
                         view.child(caption(
                             self.project.as_ref().expect("project settings have a project").display().to_string(),
                         ))
                         .child(
-                            Button::new(
-                                "settings-inherit",
-                                if self.inherits() {
-                                    "Customize project settings"
-                                } else {
-                                    "Use application defaults"
-                                },
-                            )
-                            .disabled(self.saving)
-                            .on_click(cx.listener(|view, _, _, cx| view.toggle_project_settings(cx))),
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(spacing::medium())
+                                .child(
+                                    Button::new(
+                                        "settings-inherit",
+                                        if self.inherits() {
+                                            "Customize project settings"
+                                        } else {
+                                            "Use application defaults"
+                                        },
+                                    )
+                                    .disabled(self.saving)
+                                    .on_click(cx.listener(|view, _, _, cx| view.toggle_project_settings(cx))),
+                                )
+                                .when(self.inherits(), |row| row.child(caption("This project uses application defaults."))),
                         )
                     })
-                    .when(!self.project_scope, |view| {
-                        view.child(caption("Defaults for all projects and untitled documents."))
-                    })
-                    .when(self.inherits(), |view| view.child(caption("This project uses application defaults.")))
                     .when(!self.inherits() && !self.saving, |view| view.child(controls))
                     .when(self.saving, |view| view.child(caption("Saving settings..."))),
             )
             .when_some(self.error.clone(), |view, error| view.child(inline_error(error)))
-            .child(hairline())
             .child(
                 chrome_strip()
+                    .id("settings-footer")
                     .debug_selector(|| "settings-footer".into())
+                    .h(px(44.0))
                     .flex()
                     .items_center()
                     .gap(spacing::medium())
-                    .child(div().flex_1().when(self.saved, |view| view.child(caption("Settings saved."))))
+                    .border_t_1()
+                    .border_color(colors().border)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .when(self.saved, |view| view.child(caption("Settings saved."))),
+                    )
                     .child(
                         Button::new("settings-cancel", "Close")
                             .disabled(self.saving)
