@@ -53,6 +53,7 @@ ligature-pdf = { path = "crates/pdf" }
 ligature-preview = { path = "crates/preview" }
 ligature-synctex = { path = "crates/synctex" }
 ligature-search = { path = "crates/search" }
+ligature-formatter = { path = "crates/formatter" }
 
 [profile.release]
 opt-level = 3

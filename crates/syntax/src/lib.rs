@@ -32,6 +32,11 @@ pub struct Token {
     pub category: Category,
 }
 
+/// Lex text without associating it with a document or retaining an incremental snapshot.
+pub fn tokenize(language: Language, text: &str) -> Vec<Token> {
+    lex(language, text, 0).0
+}
+
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub document: DocumentId,

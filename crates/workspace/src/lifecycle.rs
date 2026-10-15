@@ -449,6 +449,9 @@ pub(super) async fn save(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowConte
     }
     let (point, text) = this
         .update_in(cx, |workspace, _, cx| {
+            if workspace.settings.format_on_save {
+                workspace.format_editor(Some(&path), cx);
+            }
             workspace
                 .editor
                 .update(cx, |editor, cx| editor.update_state(|state| state.save_snapshot(), cx))

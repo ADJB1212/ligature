@@ -10,6 +10,7 @@ publish = false
 description = "Top-level window views, pane layout, tabs, and coordination between editor and preview views"
 
 [dependencies]
+ligature-formatter.workspace = true
 ligature-lsp.workspace = true
 ligature-completion.workspace = true
 serde_json = { version = "1", default-features = false, features = ["std"] }

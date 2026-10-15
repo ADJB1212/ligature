@@ -143,6 +143,7 @@ impl From<BuildSettingsInput> for BuildSettings {
 pub struct Settings {
     pub font: FontSettings,
     pub indentation: IndentationSettings,
+    pub format_on_save: bool,
     pub build: BuildSettings,
     pub language_server: LanguageServerSettings,
     pub root_document: Option<PathBuf>,

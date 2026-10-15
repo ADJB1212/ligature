@@ -1,0 +1,16 @@
+[package]
+name = "ligature-formatter"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+description = "Built-in TeX source formatting without filesystem or UI dependencies"
+
+[dependencies]
+ligature-syntax.workspace = true
+
+[lints]
+workspace = true

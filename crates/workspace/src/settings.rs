@@ -14,6 +14,10 @@ use crate::{Close, OpenSettings, Save, Workspace};
 #[path = "settings_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "../tests/unit/formatter_settings.rs"]
+mod formatter_tests;
+
 impl Workspace {
     pub fn open_settings(&mut self, cx: &mut Context<Self>) {
         if let Some(handle) = self.settings_window
@@ -309,13 +313,19 @@ impl SettingsView {
     fn toggle(&self, id: &'static str, label: &'static str, enabled: bool, change: fn(&mut Settings), cx: &mut Context<Self>) -> impl IntoElement {
         row(
             label,
-            Button::new(id, if enabled { "On" } else { "Off" })
-                .selected(enabled)
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    change(&mut view.fields.settings);
-                    view.saved = false;
-                    cx.notify();
-                })),
+            div().flex().child(
+                div()
+                    .debug_selector(move || id.into())
+                    .child(
+                        Button::new(id, if enabled { "On" } else { "Off" })
+                            .selected(enabled)
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                change(&mut view.fields.settings);
+                                view.saved = false;
+                                cx.notify();
+                            })),
+                    ),
+            ),
         )
     }
 
@@ -436,7 +446,15 @@ impl Render for SettingsView {
                         ),
                     ))
                     .child(hairline())
-                    .child(row("Width", self.fields.width.clone())),
+                    .child(row("Width", self.fields.width.clone()))
+                    .child(hairline())
+                    .child(self.toggle(
+                        "settings-format-on-save",
+                        "Format on save",
+                        settings.format_on_save,
+                        |s| s.format_on_save = !s.format_on_save,
+                        cx,
+                    )),
             )
             .child(
                 section("Build")

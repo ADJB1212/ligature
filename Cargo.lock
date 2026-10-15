@@ -3359,6 +3359,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ligature-formatter"
+version = "0.0.1"
+dependencies = [
+ "ligature-syntax",
+]
+
+[[package]]
 name = "ligature-fs"
 version = "0.0.1"
 dependencies = [
@@ -3514,6 +3521,7 @@ dependencies = [
  "ligature-completion",
  "ligature-diagnostics",
  "ligature-editor",
+ "ligature-formatter",
  "ligature-fs",
  "ligature-lsp",
  "ligature-preview",

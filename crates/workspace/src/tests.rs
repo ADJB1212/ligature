@@ -20,6 +20,7 @@ fn workspace_with_template(cx: &mut TestAppContext) -> (WindowHandle<Workspace>,
     let root = window.root(cx).unwrap();
     root.update(cx, |workspace, cx| {
         workspace.configuration = ligature_settings::Configuration::default();
+        ligature_theme::set_theme(None, cx);
         workspace.configuration.defaults.language_server.enabled = false;
         workspace.settings = workspace.configuration.settings_for(None);
         workspace.configuration_path = None;

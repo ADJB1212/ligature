@@ -16,11 +16,28 @@ fn defaults_are_valid_and_stable() {
     assert_eq!(settings.font.family, None);
     assert_eq!(settings.indentation.style, Indentation::Spaces);
     assert_eq!(settings.indentation.width, 4);
+    assert!(!settings.format_on_save);
     assert_eq!(settings.build.output_directory, Path::new("build"));
     assert!(settings.build.synctex && settings.build.keep_logs && !settings.build.keep_intermediates);
     assert_eq!(settings.build.save_before_build, SaveBeforeBuild::SaveAll);
     assert_eq!(settings.root_document, None);
     assert!(settings.validate().is_empty());
+}
+
+#[test]
+fn format_on_save_round_trips_and_can_be_overridden_per_project() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let path = root.join(SETTINGS_FILE);
+    let mut configuration = Configuration::default();
+    configuration.defaults.format_on_save = true;
+    configuration.projects.insert(root.clone(), Settings::default());
+    configuration.save(&path).unwrap();
+    let (loaded, errors) = Configuration::load(&path);
+    assert!(errors.is_empty());
+    assert!(loaded.settings_for(None).format_on_save);
+    assert!(!loaded.settings_for(Some(&root)).format_on_save);
+    assert!(!load("{}").0.format_on_save);
 }
 
 #[test]

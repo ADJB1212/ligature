@@ -2,6 +2,7 @@
 
 mod builds;
 mod export;
+mod formatting;
 mod language;
 mod lifecycle;
 mod project;
@@ -46,6 +47,7 @@ actions!(
         OpenSettings,
         Save,
         SaveAs,
+        FormatDocument,
         ExportPdf,
         Close,
         Quit,
@@ -78,6 +80,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(&format!("{modifier}-o"), Open, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-s"), Save, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-shift-s"), SaveAs, Some("LigatureWorkspace")),
+        KeyBinding::new(&format!("{modifier}-shift-i"), FormatDocument, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-shift-e"), ExportPdf, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-w"), Close, Some("LigatureWorkspace")),
         KeyBinding::new(&format!("{modifier}-q"), Quit, None),
@@ -557,7 +560,7 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dirty = self.dirty(cx);
         let name = self.document.as_ref().map_or_else(|| "No document".to_owned(), Document::name);
-        let title = format!("{name}{} - Ligature", if dirty { " *" } else { "" });
+        let title = format!("Ligature - {name}{}", if dirty { " *" } else { "" });
         window.set_window_title(&title);
         let unavailable = self.busy || self.document.is_none();
         div()
@@ -582,6 +585,7 @@ impl Render for Workspace {
             .when(!unavailable, |view| {
                 view.on_action(cx.listener(|this, _: &Save, window, cx| this.start(Intent::Save, window, cx)))
                     .on_action(cx.listener(|this, _: &SaveAs, window, cx| this.start(Intent::SaveAs, window, cx)))
+                    .on_action(cx.listener(|this, _: &FormatDocument, _, cx| this.format_document(cx)))
                     .on_action(cx.listener(|this, _: &Close, window, cx| this.start(Intent::Close, window, cx)))
             })
             .on_action(cx.listener(|this, _: &Quit, window, cx| this.request_quit(window, cx)))
