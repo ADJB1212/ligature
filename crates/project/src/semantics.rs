@@ -65,6 +65,7 @@ impl SemanticIndex {
         let mut pending = vec![root.clone()];
         let mut visited = BTreeSet::new();
         let mut bibliography_files = BTreeSet::new();
+        let mut resolved_includes = BTreeMap::new();
         let mut previous_bibliographies: BTreeMap<_, Vec<_>> = BTreeMap::new();
         for (key, definitions) in &previous.bibliography.entries {
             for definition in definitions {
@@ -101,9 +102,14 @@ impl SemanticIndex {
                 }
             };
             let parent = path.parent().unwrap_or_else(|| Path::new("."));
-            for include in source.document.includes.iter().rev() {
-                pending.push(resource(parent, &include.name, "tex"));
-            }
+            let includes: Vec<_> = source
+                .document
+                .includes
+                .iter()
+                .map(|include| resource(parent, &include.name, "tex"))
+                .collect();
+            pending.extend(includes.iter().rev().cloned());
+            resolved_includes.insert(path.clone(), includes);
             for bibliography in &source.document.bibliographies {
                 bibliography_files.insert(resource(parent, &bibliography.name, "bib"));
             }
@@ -166,7 +172,7 @@ impl SemanticIndex {
                 }
             }
         }
-        index.outline = outline(&root, &index.sources);
+        index.outline = outline(&root, &index.sources, &resolved_includes);
         index
     }
 
@@ -213,7 +219,7 @@ fn resource(parent: &Path, name: &str, extension: &str) -> PathBuf {
     canonical(&path)
 }
 
-fn outline(root: &Path, sources: &BTreeMap<PathBuf, Source>) -> Vec<OutlineEntry> {
+fn outline(root: &Path, sources: &BTreeMap<PathBuf, Source>, resolved_includes: &BTreeMap<PathBuf, Vec<PathBuf>>) -> Vec<OutlineEntry> {
     enum Event<'a> {
         File(PathBuf),
         Heading(PathBuf, &'a ligature_tex::Heading),
@@ -229,18 +235,17 @@ fn outline(root: &Path, sources: &BTreeMap<PathBuf, Source>) -> Vec<OutlineEntry
                     continue;
                 }
                 let Some(source) = sources.get(&path) else { continue };
-                let parent = path.parent().unwrap_or_else(|| Path::new("."));
                 let mut source_headings = source.document.headings.iter().rev().peekable();
-                let mut includes = source.document.includes.iter().rev().peekable();
+                let mut includes = source.document.includes.iter().zip(&resolved_includes[&path]).rev().peekable();
                 pending.reserve(source_headings.len() + includes.len());
                 while source_headings.peek().is_some() || includes.peek().is_some() {
                     if source_headings
                         .peek()
-                        .is_some_and(|heading| includes.peek().is_none_or(|include| heading.range.start > include.range.start))
+                        .is_some_and(|heading| includes.peek().is_none_or(|(include, _)| heading.range.start > include.range.start))
                     {
                         pending.push(Event::Heading(path.clone(), source_headings.next().unwrap()));
                     } else {
-                        pending.push(Event::File(resource(parent, &includes.next().unwrap().name, "tex")));
+                        pending.push(Event::File(includes.next().unwrap().1.clone()));
                     }
                 }
             }

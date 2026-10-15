@@ -77,7 +77,7 @@ pub fn context(text: &str, caret: usize) -> Option<Context> {
             prefix: before[start..].into(),
         });
     }
-    let brace = before.rfind('{')?;
+    let brace = before.len() - line.len() + line.rfind('{')?;
     if before[brace + 1..].contains(['{', '}', '\\', '\n']) {
         return None;
     }

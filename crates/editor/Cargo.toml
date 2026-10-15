@@ -18,7 +18,8 @@ gpui.workspace = true
 ligature-buffer.workspace = true
 ligature-theme.workspace = true
 ligature-search.workspace = true
-unicode-segmentation = { version = "1.13", default-features = false, features = [] }
+smallvec = { version = "1", default-features = false }
+unicode-segmentation = { version = "1.13", default-features = false }
 
 [dev-dependencies]
 gpui = { workspace = true, default-features = false, features = ["test-support"] }

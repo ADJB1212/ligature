@@ -1,7 +1,8 @@
 use ligature_fs::Signature;
-use sha2::{Digest, Sha256};
+use rustc_hash::FxHasher;
 use std::{
     collections::{BTreeMap, HashMap},
+    hash::Hasher,
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -10,7 +11,7 @@ use std::{
 /// matching digest let repeated disk comparisons skip rereading unchanged files.
 #[derive(Debug)]
 pub struct SourceSnapshot {
-    files: BTreeMap<PathBuf, [u8; 32]>,
+    files: BTreeMap<PathBuf, u64>,
     complete: bool,
     verified: Mutex<HashMap<PathBuf, Signature>>,
 }
@@ -73,20 +74,20 @@ impl SourceSnapshot {
             return false;
         }
         let mut verified = self.verified.lock().unwrap();
-        self.files.iter().all(|(path, digest)| Self::file_matches(&mut verified, path, digest))
+        self.files.iter().all(|(path, digest)| Self::file_matches(&mut verified, path, *digest))
     }
 
     /// Whether the captured file at `path` still has its captured contents on disk.
     pub fn matches_disk_file(&self, path: &Path) -> bool {
         let Some((path, digest)) = self.entry(path) else { return false };
-        Self::file_matches(&mut self.verified.lock().unwrap(), path, digest)
+        Self::file_matches(&mut self.verified.lock().unwrap(), path, *digest)
     }
 
     pub fn matches_text(&self, path: &Path, text: &str) -> bool {
         self.entry(path).is_some_and(|(_, digest)| *digest == Self::digest(text.as_bytes()))
     }
 
-    fn entry(&self, path: &Path) -> Option<(&Path, &[u8; 32])> {
+    fn entry(&self, path: &Path) -> Option<(&Path, &u64)> {
         self.files
             .get_key_value(path)
             .or_else(|| {
@@ -96,12 +97,12 @@ impl SourceSnapshot {
             .map(|(path, digest)| (path.as_path(), digest))
     }
 
-    fn file_matches(verified: &mut HashMap<PathBuf, Signature>, path: &Path, digest: &[u8; 32]) -> bool {
+    fn file_matches(verified: &mut HashMap<PathBuf, Signature>, path: &Path, digest: u64) -> bool {
         let Ok(signature) = Signature::of(path) else { return false };
         if verified.get(path) == Some(&signature) {
             return true;
         }
-        let matches = std::fs::read(path).is_ok_and(|bytes| Self::digest(&bytes) == *digest);
+        let matches = std::fs::read(path).is_ok_and(|bytes| Self::digest(&bytes) == digest);
         if matches {
             verified.insert(path.to_owned(), signature);
         } else {
@@ -110,8 +111,10 @@ impl SourceSnapshot {
         matches
     }
 
-    fn digest(bytes: &[u8]) -> [u8; 32] {
-        Sha256::digest(bytes).into()
+    fn digest(bytes: &[u8]) -> u64 {
+        let mut hasher = FxHasher::default();
+        hasher.write(bytes);
+        hasher.finish()
     }
 
     fn source_paths(root: &Path, output_directory: &Path) -> ligature_project::SearchFiles {

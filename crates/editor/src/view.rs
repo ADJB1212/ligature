@@ -7,6 +7,7 @@ use gpui::{
 };
 use ligature_buffer::Buffer;
 use ligature_theme::{colors, typography};
+use smallvec::SmallVec;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
@@ -579,7 +580,7 @@ impl Editor {
             return self.shape_text(text, window, false);
         };
         let end = start + text.len();
-        let mut runs = Vec::new();
+        let mut runs = SmallVec::<[TextRun; 4]>::new();
         let mut cursor = start;
         let first = highlights.tokens.partition_point(|token| token.range.end <= start);
         let font = self.font.clone().unwrap_or_else(|| window.text_style().font());
