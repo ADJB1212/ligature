@@ -13,6 +13,7 @@ description = "File reads and writes, atomic saves, path handling, and filesyste
 tempfile = { version = "3", default-features = false }
 async-channel = { version = "2.5", default-features = false, features = ["std"] }
 notify = { version = "8.2", default-features = false, features = ["macos_fsevent"] }
+hashbrown = { version = "0.17", default-features = false, features = ["default-hasher", "inline-more"] }
 
 [lints]
 workspace = true

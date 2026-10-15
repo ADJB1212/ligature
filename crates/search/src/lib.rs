@@ -208,7 +208,7 @@ pub struct Match {
 impl Match {
     pub fn new(text: &str, range: Range<usize>) -> Self {
         let line_start = text[..range.start].rfind('\n').map_or(0, |offset| offset + 1);
-        let line = text[..range.start].bytes().filter(|&byte| byte == b'\n').count() + 1;
+        let line = memchr::memchr_iter(b'\n', &text.as_bytes()[..range.start]).count() + 1;
         let column = text[line_start..range.start].chars().count() + 1;
         let line_end = text[range.start..].find('\n').map_or(text.len(), |offset| range.start + offset);
         Self::at(text, range, line, column, line_start, line_end)
@@ -246,14 +246,14 @@ pub(crate) fn describe_matches_cancellable(text: &str, ranges: Vec<Range<usize>>
         .into_iter()
         .take_while(|_| !cancellation.is_canceled())
         .map(|range| {
-            for (index, ch) in text[offset..range.start].char_indices() {
-                if ch == '\n' {
-                    line += 1;
-                    column = 1;
-                    line_start = offset + index + 1;
-                } else {
-                    column += 1;
-                }
+            let skipped = &text[offset..range.start];
+            let mut newlines = memchr::memchr_iter(b'\n', skipped.as_bytes());
+            if let Some(last) = newlines.next_back() {
+                line += newlines.count() + 1;
+                line_start = offset + last + 1;
+                column = text[line_start..range.start].chars().count() + 1;
+            } else {
+                column += skipped.chars().count();
             }
             if range.start > line_end {
                 line_end = text[range.start..].find('\n').map_or(text.len(), |offset| range.start + offset);

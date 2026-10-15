@@ -97,6 +97,44 @@ fn inline_verbatim_uses_any_delimiter_and_stops_at_the_line_end() {
 }
 
 #[test]
+fn long_unicode_text_preserves_tokens_at_scan_boundaries() {
+    for length in [0, 15, 16, 31, 32, 33, 255, 256, 257, 287, 288, 511, 512, 1024] {
+        let prefix = format!("{}日本語", "a".repeat(length));
+        for (delimiter, category) in [
+            ("{", Category::Brace),
+            ("}", Category::Brace),
+            ("$", Category::MathDelimiter),
+            ("\\cmd", Category::Command),
+            ("% comment", Category::Comment),
+        ] {
+            let text = format!("{prefix}{delimiter} 尾");
+            let snapshot = tex(&text);
+            assert_well_formed(&snapshot);
+            assert_eq!(snapshot.tokens[0].range, 0..prefix.len());
+            assert_eq!(snapshot.tokens[1].category, category);
+            assert_eq!(snapshot.tokens[1].range.start, prefix.len());
+            assert_eq!(snapshot.tokens.last().unwrap().range.end, text.len());
+        }
+        let snapshot = tex(&format!("{prefix}\n尾"));
+        assert_eq!(pieces(&snapshot, Category::Text), [format!("{prefix}\n"), "尾".to_owned()]);
+    }
+}
+
+#[test]
+fn long_inline_verbatim_preserves_ascii_and_unicode_delimiters() {
+    let body = "日本語 { \\ $ % ".repeat(128);
+    for delimiter in ['|', '!', 'é', '😀'] {
+        let snapshot = tex(&format!("\\verb{delimiter}{body}{delimiter}\\label{{visible}}"));
+        assert_eq!(pieces(&snapshot, Category::Verbatim), [format!("{delimiter}{body}{delimiter}")]);
+        assert_eq!(pieces(&snapshot, Category::Command), ["\\verb", "\\label"]);
+        assert_well_formed(&snapshot);
+        let snapshot = tex(&format!("\\verb{delimiter}{body}\nnext"));
+        assert_eq!(pieces(&snapshot, Category::Verbatim), [format!("{delimiter}{body}")]);
+        assert_well_formed(&snapshot);
+    }
+}
+
+#[test]
 fn verbatim_without_a_delimiter_consumes_nothing() {
     let snapshot = tex("\\verb \\section{x}");
     assert!(pieces(&snapshot, Category::Verbatim).is_empty());

@@ -10,6 +10,7 @@ publish = false
 description = "TeX document semantics, commands, environments, labels, and document structure"
 
 [dependencies]
+memchr.workspace = true
 ligature-syntax.workspace = true
 
 [dev-dependencies]

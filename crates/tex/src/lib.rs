@@ -186,15 +186,9 @@ fn citation_command(name: &str) -> bool {
 fn clean(text: &str) -> String {
     text.lines()
         .map(|line| {
-            let mut end = line.len();
-            let mut escaped = false;
-            for (index, c) in line.char_indices() {
-                if c == '%' && !escaped {
-                    end = index;
-                    break;
-                }
-                escaped = c == '\\' && !escaped;
-            }
+            let end = memchr::memchr_iter(b'%', line.as_bytes())
+                .find(|&index| line.as_bytes()[..index].iter().rev().take_while(|&&byte| byte == b'\\').count() % 2 == 0)
+                .unwrap_or(line.len());
             line[..end].trim()
         })
         .filter(|line| !line.is_empty())
@@ -337,6 +331,21 @@ mod tests {
     fn document(text: &str) -> Document {
         let buffer = Buffer::from_text(text);
         parse(&Snapshot::parse(buffer.id(), buffer.revision(), Language::Tex, text.into()))
+    }
+
+    #[test]
+    fn heading_cleanup_preserves_escaped_percent_and_backslash_parity() {
+        let prefix = "日本語 ".repeat(1024);
+        for slashes in 0..6 {
+            let escaped = "\\".repeat(slashes);
+            let text = format!("{prefix}{escaped}% comment\nnext");
+            let expected = if slashes % 2 == 0 {
+                format!("{prefix}{escaped}").trim().to_owned() + " next"
+            } else {
+                format!("{prefix}{escaped}% comment next")
+            };
+            assert_eq!(clean(&text), expected);
+        }
     }
 
     #[test]

@@ -1789,9 +1789,9 @@ dependencies = [
 
 [[package]]
 name = "font-types"
-version = "0.12.6"
+version = "0.12.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c92d9081c7ab3bd83ef1eecdfad090f3d966e3ce74106779664114cfe1a6274"
+checksum = "835ae9d781464a79026cde387f9cbc650c9a4909d7cf7e658b127e3c35d2f35d"
 dependencies = [
  "bytemuck",
 ]
@@ -2642,6 +2642,9 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "foldhash 0.2.0",
+]
 
 [[package]]
 name = "heapless"
@@ -3295,6 +3298,9 @@ dependencies = [
 [[package]]
 name = "ligature-bibliography"
 version = "0.0.1"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "ligature-buffer"
@@ -3332,6 +3338,9 @@ version = "0.0.1"
 [[package]]
 name = "ligature-diagnostics"
 version = "0.0.1"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "ligature-editor"
@@ -3354,6 +3363,7 @@ name = "ligature-fs"
 version = "0.0.1"
 dependencies = [
  "async-channel",
+ "hashbrown 0.17.1",
  "notify",
  "tempfile",
 ]
@@ -3364,6 +3374,7 @@ version = "0.0.1"
 dependencies = [
  "ligature-completion",
  "ligature-diagnostics",
+ "memchr",
  "serde",
  "serde_json",
  "tempfile",
@@ -3420,6 +3431,7 @@ dependencies = [
  "ligature-buffer",
  "ligature-fs",
  "ligature-project",
+ "memchr",
  "regex",
  "regex-syntax",
  "tempfile",
@@ -3449,6 +3461,7 @@ version = "0.0.1"
 dependencies = [
  "ligature-bibliography",
  "ligature-buffer",
+ "memchr",
 ]
 
 [[package]]
@@ -3457,6 +3470,7 @@ version = "0.0.1"
 dependencies = [
  "ligature-buffer",
  "ligature-syntax",
+ "memchr",
 ]
 
 [[package]]
@@ -5130,7 +5144,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "046a7d674daf459825b32f5062056d6882db0d2f5a479fbd76ccfc870ac18709"
 dependencies = [
  "bytemuck",
- "font-types 0.12.6",
+ "font-types 0.12.7",
  "once_cell",
 ]
 
@@ -5141,7 +5155,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "005c8acf251756c478b0bf402885bfd88a1476020c4c7e6060edc1aa68da38ea"
 dependencies = [
  "bytemuck",
- "font-types 0.12.6",
+ "font-types 0.12.7",
  "once_cell",
 ]
 

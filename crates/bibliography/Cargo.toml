@@ -9,5 +9,8 @@ license.workspace = true
 publish = false
 description = "BibTeX and BibLaTeX entries, bibliography indexing, and citation lookup"
 
+[dependencies]
+memchr.workspace = true
+
 [lints]
 workspace = true

@@ -242,6 +242,23 @@ struct Parser<'a> {
     result: Bibliography,
 }
 
+#[inline]
+fn value_end(bytes: &[u8], quoted: bool) -> usize {
+    let special = |byte: &u8| matches!(byte, b'{' | b'}' | b'\\' | b'@') || (quoted && *byte == b'"');
+    let prefix = bytes.len().min(16);
+    if let Some(end) = bytes[..prefix].iter().position(special) {
+        return end;
+    }
+    for (block, chunk) in bytes[prefix..].chunks(256).enumerate() {
+        let braces = memchr::memchr3(b'{', b'}', b'\\', chunk);
+        let boundaries = memchr::memchr2(b'@', if quoted { b'"' } else { b'@' }, &chunk[..braces.unwrap_or(chunk.len())]);
+        if let Some(end) = boundaries.or(braces) {
+            return prefix + block * 256 + end;
+        }
+    }
+    bytes.len()
+}
+
 impl Parser<'_> {
     fn byte(&self) -> Option<u8> {
         self.text.as_bytes().get(self.cursor).copied()
@@ -278,7 +295,10 @@ impl Parser<'_> {
             if self.byte() == Some(b'@') {
                 return true;
             }
-            self.cursor += self.text[self.cursor..].chars().next().map_or(0, char::len_utf8);
+            self.cursor += memchr::memchr2(b'@', b'%', &self.text.as_bytes()[self.cursor..]).unwrap_or(self.text.len() - self.cursor);
+            if self.byte() == Some(b'@') {
+                return true;
+            }
         }
         false
     }
@@ -335,7 +355,9 @@ impl Parser<'_> {
                     let content = self.cursor;
                     let mut depth = 0usize;
                     let mut end = None;
-                    while let Some(byte) = self.byte() {
+                    loop {
+                        self.cursor += value_end(&self.text.as_bytes()[self.cursor..], open == b'"');
+                        let Some(byte) = self.byte() else { break };
                         if self.recovery() {
                             break;
                         }

@@ -119,6 +119,18 @@ fn match_descriptions_use_scalar_columns_and_strip_crlf_terminators() {
 }
 
 #[test]
+fn sparse_match_descriptions_preserve_unicode_columns_across_large_gaps() {
+    let text = format!("{}猫 hit 😀 hit\r\n{}尾 hit\n", "日本語\r\n\n".repeat(2048), "é".repeat(4096));
+    let ranges = search("hit", false).find(&text);
+    let described = describe_matches(&text, ranges.clone());
+    assert_eq!(described, ranges.into_iter().map(|range| Match::new(&text, range)).collect::<Vec<_>>());
+    assert_eq!(
+        described.iter().map(|matched| (matched.line, matched.column)).collect::<Vec<_>>(),
+        [(4097, 3), (4097, 9), (4098, 4099)]
+    );
+}
+
+#[test]
 fn match_excerpts_are_bounded_by_unicode_scalars() {
     let text = format!("{}cat{}", "猫".repeat(80), "é".repeat(150));
     let matched = Match::new(&text, 240..243);

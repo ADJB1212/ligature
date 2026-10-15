@@ -106,6 +106,32 @@ fn braces_quotes_and_escapes_are_preserved_inside_values() {
 }
 
 #[test]
+fn long_values_preserve_nested_braces_escapes_and_unicode() {
+    for length in [0, 15, 16, 17, 255, 256, 257, 271, 272, 511, 512, 1024] {
+        let value = format!("{} {{nested}} \\}} \\😀 \\\" user@example.org", "é".repeat(length));
+        for (open, close) in [('{', '}'), ('"', '"')] {
+            let text = format!("@book{{key,title={open}{value}{close},year=2026}}");
+            let parsed = parse(&text);
+            assert!(parsed.malformed.is_empty(), "{length} {open}");
+            assert_eq!(parsed.entries[0].title(), Some(value.as_str()));
+            assert_eq!(parsed.entries[0].year(), Some("2026"));
+            assert_eq!(highlighted(&text, &parsed, Category::Value)[0], format!("{open}{value}{close}"));
+        }
+    }
+}
+
+#[test]
+fn entry_discovery_skips_long_prose_and_preserves_comments() {
+    let text = format!(
+        "{}% @book{{hidden}}\n@book{{visible,title={{日本語}}}}",
+        "plain prose 日本語 ".repeat(1024)
+    );
+    let parsed = parse(&text);
+    assert_eq!(keys(&parsed), ["visible"]);
+    assert_eq!(highlighted(&text, &parsed, Category::Comment), ["% @book{hidden}"]);
+}
+
+#[test]
 fn comment_and_preamble_blocks_are_skipped_even_with_nested_braces() {
     let text = "@comment{ @book{hidden, title={x}} {nested} }\n@preamble{ \"\\newcommand{\\a}{b}\" }\n@book{shown}";
     let result = parse(text);

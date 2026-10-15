@@ -9,5 +9,8 @@ license.workspace = true
 publish = false
 description = "Source ranges, severity, and diagnostic collections shared by build and language services"
 
+[dependencies]
+memchr.workspace = true
+
 [lints]
 workspace = true

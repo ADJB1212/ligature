@@ -10,6 +10,7 @@ publish = false
 description = "Language-server process lifecycle, protocol transport, and request/notification handling"
 
 [dependencies]
+memchr.workspace = true
 ligature-completion.workspace = true
 ligature-diagnostics.workspace = true
 serde = { version = "1", default-features = false, features = ["std", "derive"] }

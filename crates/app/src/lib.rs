@@ -94,7 +94,7 @@ pub fn run() {
         })
         .detach();
 
-        let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
+        let bounds = Bounds::centered(None, size(px(1700.0), px(1000.0)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

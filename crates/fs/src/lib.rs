@@ -5,13 +5,14 @@ mod watcher;
 pub use watcher::FileWatcher;
 
 use std::{
-    collections::{HashMap, HashSet},
     error::Error,
     fmt, fs,
     io::{self, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
+
+use hashbrown::HashMap;
 
 #[derive(Debug)]
 pub struct FileError {
@@ -195,32 +196,55 @@ impl Signature {
     }
 }
 
-/// Reuses previously read UTF-8 text while a file's signature is unchanged.
+#[derive(Debug)]
+struct CacheEntry {
+    signature: Signature,
+    text: Arc<str>,
+    generation: u64,
+}
+
 #[derive(Debug, Default)]
 pub struct TextCache {
-    entries: HashMap<PathBuf, (Signature, Arc<str>)>,
-    touched: HashSet<PathBuf>,
+    entries: HashMap<PathBuf, CacheEntry>,
+    generation: u64,
 }
 
 impl TextCache {
     pub fn read(&mut self, path: &Path) -> Result<Arc<str>, FileError> {
         let signature = Signature::of(path).map_err(|err| error(path, "read", err))?;
-        if let Some((cached, text)) = self.entries.get(path)
-            && *cached == signature
+
+        if let Some(entry) = self.entries.get_mut(path)
+            && entry.signature == signature
         {
-            self.touched.insert(path.to_owned());
-            return Ok(Arc::clone(text));
+            entry.generation = self.generation;
+            return Ok(Arc::clone(&entry.text));
         }
+
         let bytes = fs::read(path).map_err(|err| error(path, "read", err))?;
         let text: Arc<str> = decode(path, bytes)?.into();
-        self.touched.insert(path.to_owned());
-        self.entries.insert(path.to_owned(), (signature, Arc::clone(&text)));
+
+        self.entries.insert(
+            path.to_owned(),
+            CacheEntry {
+                signature,
+                text: Arc::clone(&text),
+                generation: self.generation,
+            },
+        );
+
         Ok(text)
     }
 
-    /// Drops entries not read since the previous call.
     pub fn prune(&mut self) {
-        let touched = std::mem::take(&mut self.touched);
-        self.entries.retain(|path, _| touched.contains(path));
+        let generation = self.generation;
+
+        self.entries.retain(|_, entry| entry.generation == generation);
+
+        self.generation = self.generation.wrapping_add(1);
+
+        // Handle generation wraparound.
+        if self.generation == 0 {
+            self.entries.clear();
+        }
     }
 }

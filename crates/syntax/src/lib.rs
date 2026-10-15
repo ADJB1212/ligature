@@ -145,6 +145,29 @@ fn common_bytes(old: &[u8], new: &[u8]) -> usize {
     matched
 }
 
+#[inline]
+fn text_end(bytes: &[u8]) -> usize {
+    let prefix = bytes.len().min(32);
+    let mut end = 0;
+    while end < prefix && !matches!(bytes[end], b'{' | b'}' | b'$' | b'\\' | b'%') {
+        if bytes[end] == b'\n' {
+            return end;
+        }
+        end += 1;
+    }
+    if end < prefix {
+        return end;
+    }
+    for (block, chunk) in bytes[prefix..].chunks(256).enumerate() {
+        let structural = memchr::memchr3(b'{', b'}', b'$', chunk);
+        let controls = memchr::memchr3(b'\\', b'%', b'\n', &chunk[..structural.unwrap_or(chunk.len())]);
+        if let Some(end) = controls.or(structural) {
+            return prefix + block * 256 + end;
+        }
+    }
+    bytes.len()
+}
+
 fn lex(language: Language, text: &str, offset: usize) -> (Vec<Token>, Vec<usize>) {
     if language == Language::Bibliography {
         let bibliography = ligature_bibliography::parse(text);
@@ -217,13 +240,21 @@ fn lex(language: Language, text: &str, offset: usize) -> (Vec<Token>, Vec<usize>
                     }
                     if let Some(delimiter) = text[lexer.cursor..].chars().next().filter(|c| !c.is_whitespace()) {
                         lexer.cursor += delimiter.len_utf8();
-                        while let Some(c) = text[lexer.cursor..].chars().next() {
-                            if c == '\n' {
-                                break;
+                        if delimiter.is_ascii() {
+                            lexer.cursor = memchr::memchr2(b'\n', delimiter as u8, &text.as_bytes()[lexer.cursor..])
+                                .map_or(text.len(), |end| lexer.cursor + end);
+                            if text.as_bytes().get(lexer.cursor) == Some(&(delimiter as u8)) {
+                                lexer.cursor += 1;
                             }
-                            lexer.cursor += c.len_utf8();
-                            if c == delimiter {
-                                break;
+                        } else {
+                            while let Some(c) = text[lexer.cursor..].chars().next() {
+                                if c == '\n' {
+                                    break;
+                                }
+                                lexer.cursor += c.len_utf8();
+                                if c == delimiter {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -256,11 +287,11 @@ fn lex(language: Language, text: &str, offset: usize) -> (Vec<Token>, Vec<usize>
                 }
             }
             _ => {
-                while lexer.cursor < text.len() && !matches!(text.as_bytes()[lexer.cursor], b'%' | b'{' | b'}' | b'$' | b'\\') {
-                    let byte = text.as_bytes()[lexer.cursor];
-                    lexer.cursor += 1;
-                    if byte == b'\n' {
-                        break;
+                lexer.cursor += 1;
+                if text.as_bytes()[start] != b'\n' {
+                    lexer.cursor += text_end(&text.as_bytes()[lexer.cursor..]);
+                    if text.as_bytes().get(lexer.cursor) == Some(&b'\n') {
+                        lexer.cursor += 1;
                     }
                 }
                 lexer.push(start, Category::Text);

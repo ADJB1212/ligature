@@ -429,6 +429,60 @@ fn files_and_outline_share_a_sidebar_without_clipping_either_working_pane() {
 }
 
 #[test]
+fn sidebar_resizing_preserves_editor_space_and_width_when_hidden() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut app = TestAppContext::single();
+    let (window, root) = workspace(&mut app);
+    open_project(&mut app, window, directory.path());
+    root.update(&mut app, |workspace, cx| {
+        workspace.semantic_ui.visible = true;
+        cx.notify();
+    });
+    let mut cx = gpui::VisualTestContext::from_window(window.into(), &app);
+    cx.simulate_resize(gpui::size(px(1200.0), px(800.0)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    for (destination, expected) in [(303.0, 300.0), (1.0, 120.0), (1190.0, 788.0)] {
+        let boundary = cx.debug_bounds("sidebar-boundary").unwrap();
+        let destination = gpui::point(px(destination), boundary.center().y);
+        cx.simulate_mouse_down(boundary.center(), gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_move(destination, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_mouse_move(destination, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(destination, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let sidebar = cx.debug_bounds("workspace-sidebar").unwrap();
+        let source = cx.debug_bounds("leading-pane").unwrap();
+        let preview = cx.debug_bounds("trailing-pane").unwrap();
+        assert_eq!(sidebar.size.width, px(expected));
+        assert!(source.size.width >= px(200.0));
+        assert!(preview.size.width >= px(200.0));
+        assert!(preview.right() <= px(1200.0));
+        assert_eq!(cx.debug_bounds("project-tree").unwrap().size.width, sidebar.size.width);
+        assert_eq!(cx.debug_bounds("document-outline").unwrap().size.width, sidebar.size.width);
+    }
+    cx.simulate_resize(gpui::size(px(640.0), px(480.0)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(cx.debug_bounds("workspace-sidebar").unwrap().size.width, px(228.0));
+    assert!(cx.debug_bounds("trailing-pane").unwrap().right() <= px(640.0));
+    root.update(&mut cx, |workspace, cx| {
+        workspace.project_visible = false;
+        workspace.semantic_ui.visible = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("sidebar-boundary").is_none());
+    root.update(&mut cx, |workspace, cx| {
+        workspace.project_visible = true;
+        cx.notify();
+    });
+    cx.simulate_resize(gpui::size(px(1200.0), px(800.0)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(cx.debug_bounds("workspace-sidebar").unwrap().size.width, px(788.0));
+}
+
+#[test]
 fn sidebar_file_rows_open_documents_when_clicked_at_the_right_edge() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("main.tex");

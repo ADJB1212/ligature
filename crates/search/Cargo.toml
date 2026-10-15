@@ -10,6 +10,7 @@ publish = false
 description = "Document and project text search, result indexing, and replacement operations"
 
 [dependencies]
+memchr.workspace = true
 ligature-buffer.workspace = true
 ligature-fs.workspace = true
 ligature-project.workspace = true

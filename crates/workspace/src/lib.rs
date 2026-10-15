@@ -11,6 +11,7 @@ mod search;
 mod semantics;
 mod session;
 mod settings;
+mod splits;
 
 #[cfg(test)]
 mod tests;
@@ -28,7 +29,7 @@ use ligature_buffer::Buffer;
 use ligature_editor::Editor;
 use ligature_fs::{FileState, FileWatcher, LoadedFile};
 use ligature_theme::{colors, spacing, typography};
-use ligature_ui::{Button, Indicator, bottom_pane, caption, chrome_strip, hairline, indicator, inline_error, split_pane, vertical_seam};
+use ligature_ui::{Button, Indicator, bottom_pane, caption, chrome_strip, hairline, indicator, inline_error, sidebar_pane, split_pane};
 
 pub use ligature_preview::{FitPage, FitWidth, ZoomIn, ZoomOut};
 
@@ -134,6 +135,7 @@ pub struct Workspace {
     focus: FocusHandle,
     editor: Entity<Editor>,
     pane_ratio: f32,
+    sidebar_width: Pixels,
     preview: Entity<ligature_preview::Preview>,
     _preview_subscription: Subscription,
     _preview_observation: Subscription,
@@ -146,6 +148,9 @@ pub struct Workspace {
     _editor_subscription: Subscription,
     tabs: Vec<Option<Tab>>,
     active_tab: usize,
+    editor_layout: Option<splits::Layout>,
+    next_split: usize,
+    editor_focus: BTreeMap<gpui::EntityId, Subscription>,
     project: Option<ligature_project::Project>,
     project_visible: bool,
     directories: BTreeMap<PathBuf, ligature_project::Directory>,
@@ -226,6 +231,7 @@ impl Workspace {
             focus: cx.focus_handle(),
             editor,
             pane_ratio: 0.5,
+            sidebar_width: px(200.0),
             preview,
             _preview_subscription: preview_subscription,
             _preview_observation: preview_observation,
@@ -238,6 +244,9 @@ impl Workspace {
             _editor_subscription: subscription,
             tabs: vec![None],
             active_tab: 0,
+            editor_layout: Some(splits::Layout::Tab(0)),
+            next_split: 0,
+            editor_focus: BTreeMap::new(),
             project: None,
             project_visible: true,
             directories: BTreeMap::new(),
@@ -264,6 +273,7 @@ impl Workspace {
             project_disk: Arc::default(),
         };
         workspace.apply_settings(cx);
+        workspace.observe_editor_focus(window, cx);
         workspace.queue_semantics(cx);
         workspace.queue_language_server(window, cx);
         workspace
@@ -288,6 +298,7 @@ impl Workspace {
     }
 
     fn replace_document(&mut self, loaded: Option<LoadedFile>, window: &mut Window, cx: &mut Context<Self>) {
+        let previous = self.active_tab;
         self.editor.update(cx, |editor, _| editor.dismiss_assistance());
         let reuse_starter = loaded.is_some()
             && self.tabs.len() == 1
@@ -296,6 +307,7 @@ impl Workspace {
             && !self.dirty(cx);
         if reuse_starter {
             self.stop_watching(cx);
+            self.editor_focus.remove(&self.editor.entity_id());
         } else if self.document.is_some() {
             self.park_active();
             self.active_tab = self.tabs.len();
@@ -319,6 +331,8 @@ impl Workspace {
         };
         self.document = Some(document);
         self.editor = cx.new(|cx| Editor::new(Buffer::from_text(text), cx));
+        self.show_tab(previous);
+        self.observe_editor_focus(window, cx);
         self._editor_subscription = cx.observe(&self.editor, |workspace, _, cx| workspace.editor_changed(cx));
         self.configure_active_editor(cx);
         self.start_watching(window, cx);
@@ -335,10 +349,18 @@ impl Workspace {
         self.language_document_closed(self.editor.read(cx).state().buffer().id(), cx);
         self.build_ui.document_closed(self.editor.read(cx).state().buffer().id());
         self.editor.update(cx, |editor, _| editor.cancel_background_work());
+        self.editor_focus.remove(&self.editor.entity_id());
         self.document = None;
+        self.editor_layout = self.editor_layout.take().and_then(|layout| layout.close(self.active_tab));
         self.tabs.remove(self.active_tab);
         if !self.tabs.is_empty() {
-            self.active_tab = self.active_tab.min(self.tabs.len() - 1);
+            self.active_tab = self
+                .editor_layout
+                .as_ref()
+                .map_or_else(|| self.active_tab.min(self.tabs.len() - 1), splits::Layout::first);
+            if self.editor_layout.is_none() {
+                self.editor_layout = Some(splits::Layout::Tab(self.active_tab));
+            }
             self.restore_active(window, cx);
             self.update_membership();
             self.queue_recovery(cx);
@@ -382,7 +404,9 @@ impl Workspace {
         if self.busy || index == self.active_tab || index >= self.tabs.len() {
             return;
         }
+        let previous = self.active_tab;
         self.switch_tab(index, window, cx);
+        self.show_tab(previous);
         self.start(Intent::CheckExternal, window, cx);
     }
 
@@ -413,8 +437,10 @@ impl Workspace {
             .iter()
             .position(|tab| tab.as_ref().is_some_and(|tab| tab.document.path.as_deref() == Some(path)));
         if let Some(index) = index {
+            let previous = self.active_tab;
             self.park_active();
             self.active_tab = index;
+            self.show_tab(previous);
             self.restore_active(window, cx);
             self.external_pending = true;
             true
@@ -622,8 +648,8 @@ impl Render for Workspace {
             .when_some(self.error.clone(), |view, error| view.child(inline_error(error)))
             .children(self.settings_errors.iter().map(|error| inline_error(error.clone())))
             .child({
-                let editor = if self.document.is_some() {
-                    self.editor.clone().into_any_element()
+                let editor = if let Some(layout) = &self.editor_layout {
+                    self.render_editor_layout(layout, cx)
                 } else {
                     self.render_empty_editor(cx).into_any_element()
                 };
@@ -648,41 +674,48 @@ impl Render for Workspace {
                     .child(self.render_tabs(cx))
                     .when(self.search.visible, |view| view.child(self.render_search(cx)))
                     .child(div().flex().flex_col().flex_1().min_h(px(0.0)).child(editor));
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h(gpui::px(0.0))
-                    .when((self.project.is_some() && self.project_visible) || self.semantic_ui.visible, |view| {
-                        view.child(
-                            div()
-                                .id("workspace-sidebar")
-                                .debug_selector(|| "workspace-sidebar".into())
-                                .w(px(200.0))
-                                .h_full()
-                                .flex_shrink_0()
-                                .flex()
-                                .flex_col()
-                                .overflow_hidden()
-                                .bg(colors().chrome)
-                                .when(self.project.is_some() && self.project_visible, |view| {
-                                    view.child(div().flex_1().min_h(px(0.0)).overflow_hidden().child(self.render_tree(cx)))
-                                })
-                                .when(self.semantic_ui.visible, |view| {
-                                    view.when(self.project.is_some() && self.project_visible, |view| view.child(hairline()))
-                                        .child(div().flex_1().min_h(px(0.0)).overflow_hidden().child(self.render_outline(cx)))
-                                }),
-                        )
-                        .child(vertical_seam())
-                    })
-                    .child(div().flex_1().min_w(gpui::px(0.0)).child(split_pane(
-                        editor_pane,
-                        self.preview.clone(),
-                        self.pane_ratio,
-                        cx.listener(|this, ratio: &f32, _, cx| {
-                            this.pane_ratio = *ratio;
+                let content = split_pane(
+                    editor_pane,
+                    self.preview.clone(),
+                    self.pane_ratio,
+                    cx.listener(|this, ratio: &f32, _, cx| {
+                        this.pane_ratio = *ratio;
+                        cx.notify();
+                    }),
+                );
+                let content = if (self.project.is_some() && self.project_visible) || self.semantic_ui.visible {
+                    let sidebar = div()
+                        .id("workspace-sidebar")
+                        .debug_selector(|| "workspace-sidebar".into())
+                        .w_full()
+                        .h_full()
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .overflow_hidden()
+                        .bg(colors().chrome)
+                        .when(self.project.is_some() && self.project_visible, |view| {
+                            view.child(div().flex_1().min_h(px(0.0)).overflow_hidden().child(self.render_tree(cx)))
+                        })
+                        .when(self.semantic_ui.visible, |view| {
+                            view.when(self.project.is_some() && self.project_visible, |view| view.child(hairline()))
+                                .child(div().flex_1().min_h(px(0.0)).overflow_hidden().child(self.render_outline(cx)))
+                        });
+                    sidebar_pane(
+                        sidebar,
+                        content,
+                        self.sidebar_width,
+                        px(400.0) + spacing::pane_boundary(),
+                        cx.listener(|this, width: &Pixels, _, cx| {
+                            this.sidebar_width = *width;
                             cx.notify();
                         }),
-                    )))
+                    )
+                    .into_any_element()
+                } else {
+                    content.into_any_element()
+                };
+                div().flex().flex_1().min_h(px(0.0)).child(content)
             })
             .child(self.render_status_bar(cx))
     }
@@ -794,6 +827,16 @@ impl Workspace {
                     .border_color(colors.border)
                     .when(active, |view| view.bg(colors.background).border_color(colors.focus))
                     .when(!active, |view| view.hover(|style| style.bg(colors.hover)))
+                    .when(!self.busy, |view| {
+                        view.on_drag(
+                            splits::TabDrag {
+                                workspace: cx.entity_id(),
+                                editor: editor.entity_id(),
+                                name: document.name(),
+                            },
+                            |drag, _, _, cx| cx.new(|_| drag.clone()),
+                        )
+                    })
                     .child(
                         Button::new(("activate-tab", index), document.name())
                             .quiet()

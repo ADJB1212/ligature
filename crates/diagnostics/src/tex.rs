@@ -148,7 +148,7 @@ impl Parser<'_> {
 
     fn context(&mut self, line: &str) {
         let mut remaining = line;
-        while let Some(index) = remaining.find(['(', ')']) {
+        while let Some(index) = memchr::memchr2(b'(', b')', remaining.as_bytes()) {
             let delimiter = remaining.as_bytes()[index];
             remaining = &remaining[index + 1..];
             if delimiter == b')' {
@@ -158,14 +158,17 @@ impl Parser<'_> {
             let token = if let Some(quoted) = remaining.strip_prefix('"') {
                 quoted.split_once('"').map(|(name, _)| name)
             } else {
-                let candidate = remaining.split(['(', ')']).next().unwrap_or_default();
+                let end = memchr::memchr2(b'(', b')', remaining.as_bytes()).unwrap_or(remaining.len());
+                let candidate = &remaining[..end];
                 [".tex", ".sty", ".cls", ".clo", ".ltx", ".aux", ".def", ".fd", ".cfg"]
                     .iter()
                     .filter_map(|extension| candidate.find(extension).map(|index| &candidate[..index + extension.len()]))
                     .min_by_key(|name| name.len())
                     .or_else(|| {
-                        (!candidate.is_empty() && !candidate.contains([':', '\\', '=']) && candidate.chars().any(char::is_alphabetic))
-                            .then_some(candidate)
+                        (!candidate.is_empty()
+                            && memchr::memchr3(b':', b'\\', b'=', candidate.as_bytes()).is_none()
+                            && candidate.chars().any(char::is_alphabetic))
+                        .then_some(candidate)
                     })
             };
             let path = token.filter(|name| !name.is_empty()).map(|name| source_path(self.directory, name));

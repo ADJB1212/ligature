@@ -92,7 +92,7 @@ fn lines(text: &str) -> impl Iterator<Item = Range<usize>> + '_ {
         if start > text.len() {
             return None;
         }
-        let end = text[start..].find(['\r', '\n']).map_or(text.len(), |end| start + end);
+        let end = memchr::memchr2(b'\r', b'\n', &text.as_bytes()[start..]).map_or(text.len(), |end| start + end);
         let range = start..end;
         start = if text[end..].starts_with("\r\n") { end + 2 } else { end + 1 };
         Some(range)

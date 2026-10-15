@@ -3,11 +3,13 @@
 mod bottom_pane;
 mod button;
 mod input;
+mod sidebar_pane;
 mod split_pane;
 
 pub use bottom_pane::bottom_pane;
 pub use button::Button;
 pub use input::TextInput;
+pub use sidebar_pane::sidebar_pane;
 pub use split_pane::{SplitPane, split_pane};
 
 use gpui::{Animation, AnimationExt, App, ElementId, IntoElement, KeyBinding, Window, actions, div, prelude::*, pulsating_between, px};
