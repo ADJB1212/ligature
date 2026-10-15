@@ -197,6 +197,7 @@ impl Workspace {
             },
             |path| ligature_settings::Configuration::load(path),
         );
+        ligature_theme::set_theme(configuration.theme.as_deref(), cx);
         let editor = cx.new(|cx| Editor::new(Buffer::from_text(NEW_DOCUMENT), cx));
         let build_log = cx.new(|cx| {
             let mut log = Editor::read_only(Buffer::new(), cx);

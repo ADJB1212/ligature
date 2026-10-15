@@ -224,6 +224,7 @@ fn relative_path(path: &Path) -> bool {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Configuration {
+    pub theme: Option<String>,
     pub defaults: Settings,
     pub projects: BTreeMap<PathBuf, Settings>,
 }

@@ -1,6 +1,118 @@
 //! UI colors, typography, spacing, and theme selection.
 
-use gpui::{ColorExt, Hsla, Pixels, Rgba, px, rgb, rgb_to_hsla};
+use std::cell::Cell;
+
+use gpui::{App, ColorExt, Hsla, Pixels, Rgba, px, rgb, rgb_to_hsla};
+
+mod builtins;
+pub use builtins::THEMES;
+
+pub struct Theme {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub palette: Palette,
+    pub syntax: SyntaxPalette,
+}
+
+pub struct Palette {
+    pub background: u32,
+    pub chrome: u32,
+    pub surface: u32,
+    pub gutter: u32,
+    pub text: u32,
+    pub muted_text: u32,
+    pub accent: u32,
+    pub accent_hover: u32,
+    pub accent_press: u32,
+    pub on_accent: u32,
+    pub focus: u32,
+    pub disabled_surface: u32,
+    pub disabled_text: u32,
+    pub error: u32,
+    pub error_surface: u32,
+}
+
+pub struct SyntaxPalette {
+    pub command: u32,
+    pub environment: u32,
+    pub brace: u32,
+    pub comment: u32,
+    pub math_delimiter: u32,
+    pub verbatim: u32,
+    pub entry_type: u32,
+    pub field: u32,
+    pub value: u32,
+}
+
+impl Theme {
+    pub fn colors(&self) -> Colors {
+        let palette = &self.palette;
+        let text = rgb_to_hsla(rgb(palette.text));
+        Colors {
+            background: rgb_to_hsla(rgb(palette.background)),
+            chrome: rgb_to_hsla(rgb(palette.chrome)),
+            surface: rgb_to_hsla(rgb(palette.surface)),
+            gutter: rgb_to_hsla(rgb(palette.gutter)),
+            hover: text.opacity(0.08),
+            press: text.opacity(0.12),
+            text,
+            muted_text: rgb_to_hsla(rgb(palette.muted_text)),
+            border: text.opacity(0.1),
+            accent: rgb_to_hsla(rgb(palette.accent)),
+            accent_hover: rgb_to_hsla(rgb(palette.accent_hover)),
+            accent_press: rgb_to_hsla(rgb(palette.accent_press)),
+            on_accent: rgb_to_hsla(rgb(palette.on_accent)),
+            focus: rgb_to_hsla(rgb(palette.focus)),
+            disabled_surface: rgb_to_hsla(rgb(palette.disabled_surface)),
+            disabled_text: rgb_to_hsla(rgb(palette.disabled_text)),
+            error: rgb_to_hsla(rgb(palette.error)),
+            error_surface: rgb_to_hsla(rgb(palette.error_surface)),
+            selection: rgb_to_hsla(rgb(palette.accent)).opacity(0.22),
+            search_match: rgb_to_hsla(rgb(palette.accent)).opacity(0.12),
+            current_line: text.opacity(0.05),
+        }
+    }
+
+    pub fn syntax_color(&self, category: ligature_syntax::Category) -> Hsla {
+        use ligature_syntax::Category;
+        let syntax = &self.syntax;
+        rgb_to_hsla(rgb(match category {
+            Category::Text => self.palette.text,
+            Category::Command => syntax.command,
+            Category::Environment => syntax.environment,
+            Category::Brace => syntax.brace,
+            Category::Comment => syntax.comment,
+            Category::MathDelimiter => syntax.math_delimiter,
+            Category::Verbatim => syntax.verbatim,
+            Category::EntryType => syntax.entry_type,
+            Category::Field => syntax.field,
+            Category::Value => syntax.value,
+        }))
+    }
+}
+
+// GPUI renders and applies settings on the UI thread.
+thread_local! {
+    static ACTIVE: Cell<&'static Theme> = const { Cell::new(&THEMES[0]) };
+}
+
+pub fn current() -> &'static Theme {
+    ACTIVE.with(Cell::get)
+}
+
+pub fn find(id: &str) -> Option<&'static Theme> {
+    THEMES.iter().find(|theme| theme.id == id)
+}
+
+pub fn resolve(id: Option<&str>) -> &'static Theme {
+    id.and_then(find).unwrap_or(&THEMES[0])
+}
+
+pub fn set_theme(id: Option<&str>, cx: &mut App) {
+    let theme = resolve(id);
+    ACTIVE.with(|active| active.set(theme));
+    cx.refresh_windows();
+}
 
 pub struct Colors {
     pub background: Hsla,
@@ -27,41 +139,11 @@ pub struct Colors {
 }
 
 pub fn colors() -> Colors {
-    let paper = rgb_to_hsla(rgb(0xdce3ea));
-    let ink = rgb_to_hsla(rgb(0x1a2330));
-    Colors {
-        background: ink,
-        chrome: rgb_to_hsla(rgb(0x161e29)),
-        surface: rgb_to_hsla(rgb(0x222d3b)),
-        gutter: rgb_to_hsla(rgb(0x18212d)),
-        hover: paper.opacity(0.08),
-        press: paper.opacity(0.12),
-        text: paper,
-        muted_text: rgb_to_hsla(rgb(0x9aa7b7)),
-        border: paper.opacity(0.1),
-        accent: paper,
-        accent_hover: rgb_to_hsla(rgb(0xf2f5f8)),
-        accent_press: rgb_to_hsla(rgb(0xc5ced8)),
-        on_accent: rgb_to_hsla(rgb(0x1a2330)),
-        focus: rgb_to_hsla(rgb(0x9eb0c4)),
-        disabled_surface: rgb_to_hsla(rgb(0x2a3544)),
-        disabled_text: rgb_to_hsla(rgb(0x6d7a8a)),
-        error: rgb_to_hsla(rgb(0xe8a49c)),
-        error_surface: rgb_to_hsla(rgb(0x3a2e32)),
-        selection: paper.opacity(0.22),
-        search_match: paper.opacity(0.12),
-        current_line: paper.opacity(0.05),
-    }
+    current().colors()
 }
 
 pub fn syntax_color(category: ligature_syntax::Category) -> Hsla {
-    use ligature_syntax::Category;
-    let colors = colors();
-    match category {
-        Category::Comment => colors.muted_text,
-        Category::Brace | Category::MathDelimiter => colors.focus,
-        _ => colors.text,
-    }
+    current().syntax_color(category)
 }
 
 pub mod typography {
@@ -116,12 +198,58 @@ pub mod spacing {
 
 /// Background of the workspace.
 pub fn window_background() -> Rgba {
-    rgb(0x1a2330)
+    rgb(current().palette.background)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_and_unknown_preferences_use_the_default_theme() {
+        assert_eq!(resolve(None).id, "press_bed");
+        assert_eq!(resolve(Some("removed_theme")).id, "press_bed");
+        for theme in THEMES {
+            assert_eq!(resolve(Some(theme.id)).name, theme.name);
+            assert_eq!(THEMES.iter().filter(|other| other.id == theme.id).count(), 1);
+        }
+    }
+
+    #[test]
+    fn built_in_text_and_syntax_have_readable_contrast() {
+        fn luminance(color: u32) -> f64 {
+            let linear = |channel: u32| {
+                let value = f64::from(channel & 0xff) / 255.0;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear(color >> 16) + 0.7152 * linear(color >> 8) + 0.0722 * linear(color)
+        }
+        for theme in THEMES {
+            let background = luminance(theme.palette.background);
+            let syntax = &theme.syntax;
+            for color in [
+                theme.palette.text,
+                theme.palette.muted_text,
+                syntax.command,
+                syntax.environment,
+                syntax.brace,
+                syntax.comment,
+                syntax.math_delimiter,
+                syntax.verbatim,
+                syntax.entry_type,
+                syntax.field,
+                syntax.value,
+            ] {
+                let foreground = luminance(color);
+                let contrast = (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05);
+                assert!(contrast >= 4.5, "{}: {color:06x} has contrast {contrast}", theme.name);
+            }
+        }
+    }
 
     #[test]
     fn test_colors_initialization() {

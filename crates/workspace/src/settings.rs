@@ -47,6 +47,7 @@ impl Workspace {
     }
 
     fn configuration_saved(&mut self, configuration: Configuration, cx: &mut Context<Self>) {
+        ligature_theme::set_theme(configuration.theme.as_deref(), cx);
         let settings = configuration.settings_for(self.project.as_ref().map(|project| project.root.as_path()));
         let language_changed = self.settings.language_server != settings.language_server;
         self.settings = settings;
@@ -386,6 +387,28 @@ impl Render for SettingsView {
             .flex()
             .flex_col()
             .gap(spacing::large())
+            .when(!self.project_scope, |view| {
+                view.child(
+                    section("Appearance").child(row(
+                        "Theme",
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(spacing::small())
+                            .children(ligature_theme::THEMES.iter().map(|theme| {
+                                div().debug_selector(move || theme.id.into()).child(
+                                    Button::new(theme.id, theme.name)
+                                        .selected(ligature_theme::resolve(self.configuration.theme.as_deref()).id == theme.id)
+                                        .on_click(cx.listener(move |view, _, _, cx| {
+                                            view.configuration.theme = Some(theme.id.to_owned());
+                                            view.saved = false;
+                                            cx.notify();
+                                        })),
+                                )
+                            })),
+                    )),
+                )
+            })
             .child(
                 section("Editor")
                     .child(row("Font family", self.fields.family.clone()))

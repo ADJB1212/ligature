@@ -252,7 +252,10 @@ fn saving_creates_missing_configuration_directories() {
 fn central_configuration_round_trips_defaults_and_project_settings() {
     let directory = tempfile::tempdir().unwrap();
     let project = directory.path().join("project with spaces");
-    let mut configuration = Configuration::default();
+    let mut configuration = Configuration {
+        theme: Some("daylight".into()),
+        ..Configuration::default()
+    };
     configuration.defaults.font.size = 19.0;
     let mut settings = configuration.settings_for(Some(&project));
     settings.indentation.width = 2;

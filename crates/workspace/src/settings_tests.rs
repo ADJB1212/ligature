@@ -33,6 +33,26 @@ fn settings_shortcut_reuses_the_window_and_close_discards_unsaved_changes() {
 }
 
 #[test]
+fn theme_picker_keeps_changes_in_the_draft_until_saved() {
+    let mut app = TestAppContext::single();
+    let (_, root) = crate::tests::workspace(&mut app);
+    let (window, view) = open_settings(&mut app, &root);
+    let mut cx = gpui::VisualTestContext::from_window(window.into(), &app);
+    let option = cx.debug_bounds("midnight").unwrap();
+    cx.simulate_click(option.center(), Default::default());
+    cx.update(|_, cx| {
+        assert_eq!(view.read(cx).configuration.theme.as_deref(), Some("midnight"));
+        assert!(!view.read(cx).saved);
+        assert_eq!(ligature_theme::current().id, "press_bed");
+    });
+    cx.simulate_keystrokes("cmd-w");
+    app.run_until_parked();
+    let (_, reopened) = open_settings(&mut app, &root);
+    reopened.read_with(&app, |view, _| assert!(view.configuration.theme.is_none()));
+    assert_eq!(ligature_theme::current().id, "press_bed");
+}
+
+#[test]
 fn saving_defaults_updates_all_editors_and_persists_centrally() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("config/ligature/settings.json");
@@ -45,6 +65,7 @@ fn saving_defaults_updates_all_editors_and_persists_centrally() {
     root.update(&mut cx, |workspace, _| workspace.configuration_path = Some(path.clone()));
     let (window, view) = open_settings(&mut cx, &root);
     view.update(&mut cx, |view, cx| {
+        view.configuration.theme = Some("daylight".into());
         view.fields.width.update(cx, |input, cx| input.set_text("2", cx));
         view.fields.size.update(cx, |input, cx| input.set_text("18.5", cx));
         view.fields.reruns.update(cx, |input, cx| input.set_text("3", cx));
@@ -53,6 +74,9 @@ fn saving_defaults_updates_all_editors_and_persists_centrally() {
     cx.run_until_parked();
     let (configuration, errors) = Configuration::load(&path);
     assert!(errors.is_empty());
+    assert_eq!(configuration.theme.as_deref(), Some("daylight"));
+    assert_eq!(ligature_theme::current().id, "daylight");
+    assert_eq!(colors().background, ligature_theme::find("daylight").unwrap().colors().background);
     assert_eq!(configuration.defaults.font.size, 18.5);
     assert_eq!(configuration.defaults.build.reruns, Some(3));
     assert_eq!(configuration.defaults.indentation.width, 2);
@@ -109,6 +133,7 @@ fn failed_settings_writes_report_errors_and_do_not_apply_changes() {
     root.update(&mut cx, |workspace, _| workspace.configuration_path = Some(blocked.join("settings.json")));
     let (_, view) = open_settings(&mut cx, &root);
     view.update(&mut cx, |view, cx| {
+        view.configuration.theme = Some("midnight".into());
         view.fields.width.update(cx, |input, cx| input.set_text("2", cx));
         view.save(cx);
     });
@@ -118,6 +143,7 @@ fn failed_settings_writes_report_errors_and_do_not_apply_changes() {
         assert!(!view.saved);
         assert!(!view.saving);
     });
+    assert_eq!(ligature_theme::current().id, "press_bed");
     root.read_with(&cx, |workspace, cx| assert_eq!(workspace.editor.read(cx).state().tab_size(), 4));
 }
 
