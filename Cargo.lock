@@ -3495,6 +3495,7 @@ version = "0.0.1"
 dependencies = [
  "dirs 7.0.0",
  "hex",
+ "ligature-fs",
  "reqwest",
  "serde",
  "serde_json",

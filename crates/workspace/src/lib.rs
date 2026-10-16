@@ -172,6 +172,7 @@ pub struct Workspace {
     search: search::SearchUi,
     bundle_ui: resources::BundleUi,
     build_ui: builds::BuildUi,
+    built_documents: std::collections::HashMap<ligature_buffer::DocumentId, ligature_build::BuildArtifacts>,
     build_log: Entity<Editor>,
     build_output_height: Pixels,
     semantic_ui: semantics::SemanticUi,
@@ -269,6 +270,7 @@ impl Workspace {
             search,
             bundle_ui: resources::BundleUi::default(),
             build_ui: builds::BuildUi::default(),
+            built_documents: std::collections::HashMap::new(),
             build_log,
             build_output_height: px(240.0),
             semantic_ui: semantics::SemanticUi::default(),
@@ -310,6 +312,7 @@ impl Workspace {
             && matches!(self.editor.read(cx).state().text(), "" | NEW_DOCUMENT)
             && !self.dirty(cx);
         if reuse_starter {
+            self.built_documents.remove(&self.editor.read(cx).state().buffer().id());
             self.stop_watching(cx);
             self.editor_focus.remove(&self.editor.entity_id());
         } else if self.document.is_some() {
@@ -342,6 +345,7 @@ impl Workspace {
         self.start_watching(window, cx);
         self.focus_editor(window, cx);
         self.update_membership();
+        self.restore_tab_preview(cx);
         self.editor_changed(cx);
     }
 
@@ -352,6 +356,7 @@ impl Workspace {
         self.stop_watching(cx);
         self.language_document_closed(self.editor.read(cx).state().buffer().id(), cx);
         self.build_ui.document_closed(self.editor.read(cx).state().buffer().id());
+        self.built_documents.remove(&self.editor.read(cx).state().buffer().id());
         self.editor.update(cx, |editor, _| editor.cancel_background_work());
         self.editor_focus.remove(&self.editor.entity_id());
         self.document = None;
@@ -372,6 +377,7 @@ impl Workspace {
         }
         self.update_membership();
         self.search_sources_changed(cx);
+        self.restore_tab_preview(cx);
         self.refresh_preview_staleness(cx);
         self.open_text.clear();
         self.semantic_ui.cancel();
@@ -398,6 +404,7 @@ impl Workspace {
         self.watcher = tab.watcher;
         self.watch_task = tab.watch_task;
         self.external_pending = tab.external_pending;
+        self.restore_tab_preview(cx);
         self._editor_subscription = cx.observe(&self.editor, |workspace, _, cx| workspace.editor_changed(cx));
         self.focus_editor(window, cx);
         self.editor_changed(cx);

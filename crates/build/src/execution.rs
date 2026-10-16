@@ -256,22 +256,18 @@ impl BuildJob {
         let _lease = OutputLease::acquire(request.output_directory()).map_err(|message| failure(FailureKind::Output, message))?;
         let sources = Arc::new(crate::SourceSnapshot::capture(&request.project_root, request.output_directory()));
         self.0.lock().unwrap().snapshot.sources = Some(Arc::clone(&sources));
-        let mut version = Command::new(&resources.executable)
-            .arg("--version")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| failure(FailureKind::Installation, format!("Could not launch bundled Tectonic: {error}")))?;
-        let version_status = self
-            .collect(&mut version)
-            .map_err(|message| failure(FailureKind::Installation, message))?;
-        if !version_status.success() || self.snapshot().output.trim() != format!("Tectonic {ENGINE_VERSION}") {
-            return Err(failure(
-                FailureKind::Installation,
-                format!("Bundled Tectonic must be version {ENGINE_VERSION}. Reinstall Ligature."),
-            ));
-        }
+        crate::version::verify(&resources.executable, || {
+            let mut version = Command::new(&resources.executable)
+                .arg("--version")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("Could not launch bundled Tectonic: {error}"))?;
+            let version_status = self.collect(&mut version)?;
+            Ok(version_status.success() && self.snapshot().output.trim() == format!("Tectonic {ENGINE_VERSION}"))
+        })
+        .map_err(|message| failure(FailureKind::Installation, message))?;
         self.0.lock().unwrap().snapshot.output.clear();
         let directory = tempfile::Builder::new()
             .prefix("build-")

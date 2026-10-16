@@ -1,6 +1,10 @@
 //! Bundled TeX resource locations and engine compatibility metadata.
 
-use std::path::{Path, PathBuf};
+use ligature_fs::Signature;
+use std::{
+    path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
+};
 
 mod bundle;
 mod install;
@@ -20,6 +24,29 @@ pub struct BundledResources {
     pub fonts: PathBuf,
     pub format_cache: PathBuf,
     bundle_checksum: String,
+}
+
+#[derive(PartialEq, Eq)]
+struct ValidationIdentity {
+    resources: BundledResources,
+    signatures: Vec<Signature>,
+}
+
+impl ValidationIdentity {
+    fn read(resources: &BundledResources) -> Result<Self, String> {
+        let signatures = std::iter::once(resources.bundle.clone())
+            .chain(
+                include_str!("../resources/ligature-bundle-1.fonts")
+                    .lines()
+                    .map(|name| resources.fonts.join("otf").join(name)),
+            )
+            .map(|path| Signature::of(&path).map_err(|error| installation_error(&path, error)))
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            resources: resources.clone(),
+            signatures,
+        })
+    }
 }
 
 impl BundledResources {
@@ -104,6 +131,14 @@ impl BundledResources {
         if !self.executable.is_file() {
             return Err(installation_error(&self.executable, "missing bundled Tectonic executable"));
         }
+        static VALIDATED: OnceLock<Mutex<Option<ValidationIdentity>>> = OnceLock::new();
+        let mut validated = VALIDATED.get_or_init(|| Mutex::new(None)).lock().unwrap();
+        let identity = ValidationIdentity::read(self).ok();
+        if identity.is_some() && *validated == identity {
+            let file = std::fs::File::open(&self.bundle).map_err(|error| installation_error(&self.bundle, error))?;
+            return LocalBundle::from_file(file, &self.bundle);
+        }
+        *validated = None;
         let mut bundle = LocalBundle::open_with_checksum(&self.bundle, &self.bundle_checksum)?;
         for name in include_str!("../resources/ligature-bundle-1.fonts").lines() {
             let path = self.fonts.join("otf").join(name);
@@ -115,6 +150,9 @@ impl BundledResources {
         let expected_cache = format!("tectonic-{ENGINE_VERSION}-bundle-{BUNDLE_REVISION}-{}", self.bundle_checksum);
         if self.format_cache.file_name().and_then(|name| name.to_str()) != Some(expected_cache.as_str()) {
             return Err(installation_error(&self.format_cache, "incompatible format cache"));
+        }
+        if identity.is_some() && ValidationIdentity::read(self).ok() == identity {
+            *validated = identity;
         }
         Ok(bundle)
     }
@@ -195,6 +233,42 @@ mod tests {
         std::fs::create_dir_all(resources.fonts.join("otf")).unwrap();
         std::fs::write(resources.fonts.join("otf").join(name), "corrupt font").unwrap();
         assert!(resources.validate().err().unwrap().contains("font checksum mismatch"));
+    }
+
+    #[test]
+    fn repeated_validation_detects_replaced_fonts_and_bundle() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut resources = BundledResources::new(Path::new(BUILT_RESOURCE_DIRECTORY), directory.path()).unwrap();
+        let original_bundle = resources.bundle.clone();
+        resources.bundle = directory.path().join("bundle.zip");
+        std::fs::copy(&original_bundle, &resources.bundle).unwrap();
+        let original_fonts = resources.fonts.clone();
+        resources.fonts = directory.path().join("fonts");
+        std::fs::create_dir_all(resources.fonts.join("otf")).unwrap();
+        for name in include_str!("../resources/ligature-bundle-1.fonts").lines() {
+            std::fs::copy(original_fonts.join("otf").join(name), resources.fonts.join("otf").join(name)).unwrap();
+        }
+        resources.validate().unwrap();
+        assert!(resources.validate().unwrap().contains("latex.ltx"));
+
+        let name = include_str!("../resources/ligature-bundle-1.fonts").lines().next().unwrap();
+        let font = resources.fonts.join("otf").join(name);
+        let replacement = directory.path().join("replacement");
+        let mut bytes = std::fs::read(&font).unwrap();
+        bytes[0] ^= 1;
+        std::fs::write(&replacement, bytes).unwrap();
+        std::fs::rename(&replacement, &font).unwrap();
+        assert!(resources.validate().err().unwrap().contains("font checksum mismatch"));
+        std::fs::copy(original_fonts.join("otf").join(name), &font).unwrap();
+        resources.validate().unwrap();
+
+        std::fs::write(&replacement, "corrupt archive").unwrap();
+        std::fs::rename(&replacement, &resources.bundle).unwrap();
+        assert!(resources.validate().err().unwrap().contains("checksum mismatch"));
+        std::fs::copy(original_bundle, &resources.bundle).unwrap();
+        resources.validate().unwrap();
+        std::fs::remove_file(&font).unwrap();
+        assert!(resources.validate().is_err());
     }
 
     #[cfg(target_os = "macos")]

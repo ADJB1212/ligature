@@ -72,6 +72,7 @@ pub(super) async fn load_project(this: &WeakEntity<Workspace>, cx: &mut AsyncWin
         workspace.directories.clear();
         workspace.expanded.insert(project.root.clone());
         workspace.project = Some(project);
+        workspace.restore_tab_preview(cx);
         if workspace.configuration == expected_configuration {
             workspace.settings = settings;
             workspace.settings_errors = errors;

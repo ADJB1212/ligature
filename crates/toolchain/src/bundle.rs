@@ -46,7 +46,7 @@ impl LocalBundle {
         Ok((file, hex::encode(hash.finalize())))
     }
 
-    fn from_file(file: File, path: &Path) -> Result<Self, String> {
+    pub(crate) fn from_file(file: File, path: &Path) -> Result<Self, String> {
         let archive = ZipArchive::new(file).map_err(|error| installation_error(path, error))?;
         Ok(Self { archive })
     }

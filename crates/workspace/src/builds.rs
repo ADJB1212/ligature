@@ -118,6 +118,38 @@ impl Drop for BuildUi {
 }
 
 impl Workspace {
+    fn record_successful_build(&mut self, owner: DocumentId, artifacts: &BuildArtifacts, cx: &mut Context<Self>) {
+        let open = self.tabs.iter().any(|tab| {
+            let editor = tab.as_ref().map_or(&self.editor, |tab| &tab.editor);
+            editor.read(cx).state().buffer().id() == owner
+        });
+        if open {
+            self.built_documents.insert(owner, artifacts.clone());
+            self.restore_tab_preview(cx);
+        }
+    }
+
+    pub(super) fn restore_tab_preview(&mut self, cx: &mut Context<Self>) {
+        let document = self.editor.read(cx).state().buffer().id();
+        let artifacts = self.document.as_ref().and_then(|_| self.built_documents.get(&document)).cloned();
+        if self.build_ui.last_success.as_ref().map(|artifacts| &artifacts.pdf) == artifacts.as_ref().map(|artifacts| &artifacts.pdf) {
+            return;
+        }
+        let changed_tab = self.build_ui.preview_document != Some(document);
+        self.preview.update(cx, |preview, cx| {
+            if changed_tab || artifacts.is_none() {
+                preview.clear(cx);
+            }
+            if let Some(artifacts) = &artifacts {
+                preview.load(artifacts.pdf.clone(), artifacts.synctex.clone(), artifacts.source_directory.clone(), cx);
+            }
+        });
+        self.build_ui.preview_document = artifacts.as_ref().map(|_| document);
+        self.build_ui.last_success = artifacts;
+        self.build_ui.disk_stale = false;
+        self.refresh_preview_staleness(cx);
+    }
+
     pub(super) fn render_build_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (status, kind) = self.build_ui.status();
         let (errors, warnings) = self.build_ui.diagnostic_counts();
@@ -355,6 +387,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let job = BuildJob::default();
+        let owner = self.editor.read(cx).state().buffer().id();
         let worker = job.clone();
         self.build_ui.job = Some(job.clone());
         self.build_ui.running_document = document;
@@ -378,19 +411,7 @@ impl Workspace {
                 if this
                     .update_in(cx, |workspace, _, cx| {
                         if let Some(artifacts) = &snapshot.artifacts {
-                            if workspace
-                                .build_ui
-                                .last_success
-                                .as_ref()
-                                .is_none_or(|previous| previous.pdf != artifacts.pdf)
-                            {
-                                workspace.preview.update(cx, |preview, cx| {
-                                    preview.load(artifacts.pdf.clone(), artifacts.synctex.clone(), artifacts.source_directory.clone(), cx)
-                                });
-                            }
-                            workspace.build_ui.last_success = Some(artifacts.clone());
-                            workspace.build_ui.preview_document = document;
-                            workspace.build_ui.disk_stale = false;
+                            workspace.record_successful_build(owner, artifacts, cx);
                         }
                         if finished {
                             workspace.build_ui.running_document = None;
@@ -777,6 +798,124 @@ pub(super) async fn shutdown(this: &WeakEntity<Workspace>, cx: &mut AsyncWindowC
 mod tests {
     use super::*;
     use gpui::{AppContext, TestAppContext};
+
+    #[cfg(target_os = "macos")]
+    fn preview_artifacts() -> BuildArtifacts {
+        let build = TextBuild::prepare(crate::NEW_DOCUMENT, &ligature_settings::BuildSettings::default()).unwrap();
+        let pdf = build.source.root_document.with_extension("pdf");
+        std::fs::write(&pdf, include_bytes!("../../pdf/tests/fixtures/pages.pdf")).unwrap();
+        BuildArtifacts {
+            pdf,
+            log: None,
+            synctex: None,
+            source_directory: build.request.filesystem_root().to_owned(),
+            root_document: build.source.root_document.clone(),
+            sources: Arc::new(ligature_build::SourceSnapshot::capture(
+                build.request.filesystem_root(),
+                build.request.output_directory(),
+            )),
+            sources_changed: false,
+            temporary_source: Some(build.source),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn saved_tab_keeps_its_pdf_across_build_ui_resets() {
+        let mut cx = TestAppContext::single();
+        let (window, root) = crate::tests::workspace(&mut cx);
+        let mut artifacts = preview_artifacts();
+        let _source = artifacts.temporary_source.take();
+        cx.update_window(window.into(), |_, window, cx| {
+            root.update(cx, |workspace, cx| {
+                workspace.replace_document(
+                    Some(ligature_fs::LoadedFile {
+                        path: artifacts.root_document.clone(),
+                        text: crate::NEW_DOCUMENT.into(),
+                    }),
+                    window,
+                    cx,
+                );
+                let id = workspace.editor.read(cx).state().buffer().id();
+                workspace.record_successful_build(id, &artifacts, cx);
+                workspace.replace_document(None, window, cx);
+                assert!(workspace.preview.read(cx).pdf_snapshot().is_none());
+                workspace.build_ui.reset();
+                workspace.switch_tab(0, window, cx);
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        root.read_with(&cx, |workspace, cx| {
+            assert_eq!(workspace.preview.read(cx).pdf_snapshot().unwrap().0, artifacts.pdf);
+            assert!(workspace.build_ui.job.is_none());
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn switching_tabs_restores_each_pdf_without_rebuilding() {
+        let mut cx = TestAppContext::single();
+        let (window, root) = crate::tests::workspace(&mut cx);
+        let first = preview_artifacts();
+        let second = preview_artifacts();
+        let replacement = preview_artifacts();
+        let first_id = root.update(&mut cx, |workspace, cx| {
+            let id = workspace.editor.read(cx).state().buffer().id();
+            workspace.record_successful_build(id, &first, cx);
+            id
+        });
+        cx.run_until_parked();
+        for (index, artifacts) in [(0, &first), (1, &second)] {
+            cx.update_window(window.into(), |_, window, cx| {
+                root.update(cx, |workspace, cx| {
+                    if index == 1 {
+                        workspace.replace_document(None, window, cx);
+                        assert!(workspace.preview.read(cx).pdf_snapshot().is_none());
+                        let id = workspace.editor.read(cx).state().buffer().id();
+                        workspace.record_successful_build(id, artifacts, cx);
+                    }
+                });
+            })
+            .unwrap();
+            cx.run_until_parked();
+            root.read_with(&cx, |workspace, cx| {
+                assert_eq!(workspace.preview.read(cx).pdf_snapshot().unwrap().0, artifacts.pdf);
+            });
+        }
+        for (index, artifacts) in [(0, &first), (1, &second), (0, &first)] {
+            cx.update_window(window.into(), |_, window, cx| {
+                root.update(cx, |workspace, cx| workspace.switch_tab(index, window, cx));
+            })
+            .unwrap();
+            cx.run_until_parked();
+            root.read_with(&cx, |workspace, cx| {
+                assert_eq!(workspace.preview.read(cx).pdf_snapshot().unwrap().0, artifacts.pdf);
+                assert!(workspace.build_ui.job.is_none());
+            });
+        }
+        cx.update_window(window.into(), |_, window, cx| {
+            root.update(cx, |workspace, cx| {
+                workspace.switch_tab(1, window, cx);
+                workspace.record_successful_build(first_id, &replacement, cx);
+                assert_eq!(workspace.build_ui.last_success.as_ref().unwrap().pdf, second.pdf);
+                assert_eq!(workspace.build_ui.preview_document, Some(workspace.editor.read(cx).state().buffer().id()));
+                workspace.switch_tab(0, window, cx);
+                assert_eq!(workspace.build_ui.last_success.as_ref().unwrap().pdf, replacement.pdf);
+                workspace.switch_tab(1, window, cx);
+                workspace.switch_tab(0, window, cx);
+                workspace.close_document(window, cx);
+                assert!(!workspace.built_documents.contains_key(&first_id));
+                workspace.record_successful_build(first_id, &first, cx);
+                assert!(!workspace.built_documents.contains_key(&first_id));
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        root.read_with(&cx, |workspace, cx| {
+            assert_eq!(workspace.preview.read(cx).pdf_snapshot().unwrap().0, second.pdf);
+        });
+    }
 
     #[test]
     fn saved_standalone_build_preparation_opens_its_folder_without_a_picker() {

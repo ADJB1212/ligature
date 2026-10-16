@@ -12,6 +12,7 @@ use std::{
 
 mod execution;
 mod sources;
+mod version;
 pub use execution::{BuildArtifacts, BuildFailure, BuildJob, BuildSnapshot, BuildState, FailureKind, LOG_LIMIT};
 pub use sources::SourceSnapshot;
 
@@ -185,15 +186,13 @@ impl BuildSession {
     pub fn run(&mut self) -> Result<Output, String> {
         let _lease = execution::OutputLease::acquire(&self.output_directory)?;
         self.bundle = self.resources.validate()?;
-        let version = Command::new(&self.resources.executable)
-            .arg("--version")
-            .output()
-            .map_err(|error| format!("Installation error: could not launch bundled Tectonic: {error}. Reinstall Ligature."))?;
-        if !version.status.success() || String::from_utf8_lossy(&version.stdout).trim() != format!("Tectonic {ENGINE_VERSION}") {
-            return Err(format!(
-                "Installation error: bundled Tectonic must be version {ENGINE_VERSION}. Reinstall Ligature."
-            ));
-        }
+        version::verify(&self.resources.executable, || {
+            let version = Command::new(&self.resources.executable)
+                .arg("--version")
+                .output()
+                .map_err(|error| format!("Installation error: could not launch bundled Tectonic: {error}. Reinstall Ligature."))?;
+            Ok(version.status.success() && String::from_utf8_lossy(&version.stdout).trim() == format!("Tectonic {ENGINE_VERSION}"))
+        })?;
         let output = self
             .command
             .output()
