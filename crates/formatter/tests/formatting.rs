@@ -168,6 +168,19 @@ fn table_alignment_respects_disabled_regions() {
 }
 
 #[test]
+fn table_alignment_preserves_empty_cells_and_unicode_widths() {
+    let options = Options {
+        format_tables: true,
+        ..Options::default()
+    };
+    check(
+        "\\begin{tabular}{lll}\n& & 猫\nlong & é &\n\\end{tabular}",
+        "\\begin{tabular}{lll}\n       &   & 猫\n  long & é & \n\\end{tabular}\n",
+        &options,
+    );
+}
+
+#[test]
 fn same_line_verbatim_closing_does_not_hide_following_text() {
     check(
         "\\begin{verbatim} raw  \\end{verbatim}\n\\begin{quote}\ntext\n\\end{quote}",

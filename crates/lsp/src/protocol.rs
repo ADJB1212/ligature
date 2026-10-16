@@ -353,17 +353,39 @@ pub fn diagnostics(text: &str, path: &Path, items: &Value, encoding: Encoding) -
 }
 
 pub fn hover(result: &Value) -> Option<String> {
-    fn content(value: &Value) -> String {
-        if let Some(text) = value.as_str() {
-            return text.into();
-        }
-        if let Some(items) = value.as_array() {
-            return items.iter().map(content).collect::<Vec<_>>().join("\n\n");
-        }
-        value["value"].as_str().unwrap_or_default().into()
+    fn append(text: &str, output: &mut String, remaining: &mut usize) {
+        let end = text
+            .char_indices()
+            .take(*remaining)
+            .map(|(offset, character)| {
+                *remaining -= 1;
+                offset + character.len_utf8()
+            })
+            .last()
+            .unwrap_or(0);
+        output.push_str(&text[..end]);
     }
-    let mut text = content(&result["contents"]);
-    let end = text.char_indices().nth(8000).map_or(text.len(), |(offset, _)| offset);
-    text.truncate(end);
+    fn content(value: &Value, output: &mut String, remaining: &mut usize) {
+        if *remaining == 0 {
+            return;
+        }
+        if let Some(text) = value.as_str() {
+            append(text, output, remaining);
+        } else if let Some(items) = value.as_array() {
+            for (index, item) in items.iter().enumerate() {
+                if *remaining == 0 {
+                    break;
+                }
+                if index > 0 {
+                    append("\n\n", output, remaining);
+                }
+                content(item, output, remaining);
+            }
+        } else {
+            append(value["value"].as_str().unwrap_or_default(), output, remaining);
+        }
+    }
+    let mut text = String::new();
+    content(&result["contents"], &mut text, &mut 8000);
     (!text.trim().is_empty()).then_some(text)
 }

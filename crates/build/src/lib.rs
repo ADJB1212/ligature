@@ -13,7 +13,7 @@ use std::{
 mod execution;
 mod sources;
 mod version;
-pub use execution::{BuildArtifacts, BuildFailure, BuildJob, BuildSnapshot, BuildState, FailureKind, LOG_LIMIT};
+pub use execution::{BuildArtifacts, BuildFailure, BuildJob, BuildSnapshot, BuildState, BuildVersion, FailureKind, LOG_LIMIT};
 pub use sources::SourceSnapshot;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

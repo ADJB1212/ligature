@@ -116,6 +116,20 @@ fn completion_edits_and_diagnostics_convert_from_utf16_to_bytes_and_scalars() {
 }
 
 #[test]
+fn hover_limits_unicode_content_and_counts_nested_separators() {
+    for length in [0, 1, 7997, 7998, 7999, 8000, 8001] {
+        let first = "猫".repeat(length);
+        let contents = json!([first, [null, {"language":"latex","value":"😀tail"}], "ignored"]);
+        let joined = format!("{first}\n\n\n\n😀tail\n\nignored");
+        let expected: String = joined.chars().take(8000).collect();
+        assert_eq!(hover(&json!({"contents":contents})).as_deref(), Some(expected.as_str()));
+    }
+    let oversized = json!({"contents":["😀".repeat(100_000), "unused".repeat(100_000)]});
+    assert_eq!(hover(&oversized).unwrap(), "😀".repeat(8000));
+    assert_eq!(hover(&json!({"contents":["", null, [" ", ""]]})), None);
+}
+
+#[test]
 fn batched_locations_preserve_unsorted_unicode_ranges_and_reject_invalid_items() {
     let text = "α😀z\r\n".repeat(2048);
     for (encoding, start, end) in [(Encoding::Utf8, 6, 7), (Encoding::Utf16, 3, 4), (Encoding::Utf32, 2, 3)] {

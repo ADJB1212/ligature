@@ -54,10 +54,20 @@ enum Part {
 }
 
 pub fn parse(text: &str) -> Bibliography {
+    parse_with_mode(text, true)
+}
+
+/// Scan highlight ranges without constructing entries or expanding string values.
+pub fn highlights(text: &str) -> Vec<Highlight> {
+    parse_with_mode(text, false).highlights
+}
+
+fn parse_with_mode(text: &str, semantic: bool) -> Bibliography {
     let mut parser = Parser {
         text,
         cursor: 0,
         result: Bibliography::default(),
+        semantic,
     };
     let mut strings: BTreeMap<String, Vec<Part>> = BTreeMap::new();
     let mut fields = Vec::new();
@@ -84,7 +94,9 @@ pub fn parse(text: &str) -> Bibliography {
             parser.space();
             if parser.take(b'=') {
                 if let Some(value) = parser.value() {
-                    strings.insert(text[name].to_ascii_lowercase(), value);
+                    if semantic {
+                        strings.insert(text[name].to_ascii_lowercase(), value);
+                    }
                 } else {
                     parser.result.malformed.push(start..parser.cursor);
                 }
@@ -106,14 +118,16 @@ pub fn parse(text: &str) -> Bibliography {
         let key_range = key_start..parser.cursor;
         parser.space();
         if !key_range.is_empty() && parser.take(close) {
-            parser.result.entries.push(Entry {
-                key: text[key_range.clone()].to_owned(),
-                entry_type: kind,
-                range: start..parser.cursor,
-                key_range,
-                fields: BTreeMap::new(),
-            });
-            fields.push(BTreeMap::new());
+            if semantic {
+                parser.result.entries.push(Entry {
+                    key: text[key_range.clone()].to_owned(),
+                    entry_type: kind,
+                    range: start..parser.cursor,
+                    key_range,
+                    fields: BTreeMap::new(),
+                });
+                fields.push(BTreeMap::new());
+            }
             continue;
         }
         if key_range.is_empty() || !parser.take(b',') {
@@ -144,7 +158,9 @@ pub fn parse(text: &str) -> Bibliography {
                 continue;
             }
             if let Some(value) = parser.value() {
-                entry_fields.insert(text[name].to_ascii_lowercase(), value);
+                if semantic {
+                    entry_fields.insert(text[name].to_ascii_lowercase(), value);
+                }
             } else {
                 valid = false;
                 break;
@@ -160,14 +176,19 @@ pub fn parse(text: &str) -> Bibliography {
         if !valid {
             parser.result.malformed.push(start..parser.cursor);
         }
-        parser.result.entries.push(Entry {
-            key: text[key_range.clone()].to_owned(),
-            entry_type: kind,
-            range: start..parser.cursor,
-            key_range,
-            fields: BTreeMap::new(),
-        });
-        fields.push(entry_fields);
+        if semantic {
+            parser.result.entries.push(Entry {
+                key: text[key_range.clone()].to_owned(),
+                entry_type: kind,
+                range: start..parser.cursor,
+                key_range,
+                fields: BTreeMap::new(),
+            });
+            fields.push(entry_fields);
+        }
+    }
+    if !semantic {
+        return parser.result;
     }
     let mut expanded = month_strings();
     for key in strings.keys() {
@@ -240,6 +261,7 @@ struct Parser<'a> {
     text: &'a str,
     cursor: usize,
     result: Bibliography,
+    semantic: bool,
 }
 
 #[inline]
@@ -380,19 +402,24 @@ impl Parser<'_> {
                         self.cursor += 1;
                     }
                     self.highlight(start..self.cursor, Category::Value);
-                    parts.push(Part::Literal(self.text[content..end?].to_owned()));
+                    let end = end?;
+                    if self.semantic {
+                        parts.push(Part::Literal(self.text[content..end].to_owned()));
+                    }
                 }
                 _ => {
                     let range = self.identifier();
                     if range.is_empty() {
                         return None;
                     }
-                    let value = &self.text[range.clone()];
-                    parts.push(if value.bytes().all(|byte| byte.is_ascii_digit()) {
-                        Part::Literal(value.to_owned())
-                    } else {
-                        Part::String(value.to_ascii_lowercase())
-                    });
+                    if self.semantic {
+                        let value = &self.text[range.clone()];
+                        parts.push(if value.bytes().all(|byte| byte.is_ascii_digit()) {
+                            Part::Literal(value.to_owned())
+                        } else {
+                            Part::String(value.to_ascii_lowercase())
+                        });
+                    }
                     self.highlight(range, Category::Value);
                 }
             }

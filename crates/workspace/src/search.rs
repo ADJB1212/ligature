@@ -264,7 +264,7 @@ impl Workspace {
                             document: state.buffer().id(),
                             revision: state.buffer().revision(),
                         }),
-                        disk: document.disk.clone(),
+                        disk: FileState::Missing,
                     },
                 );
             }
@@ -293,7 +293,6 @@ impl Workspace {
         }
         let root = project.root.clone();
         let output = root.join(&self.settings.build.output_directory);
-        let mut open = self.open_sources(cx);
         let query = self.search.query.clone();
         let generation = self.search.generation;
         let cancellation = Cancellation::default();
@@ -301,6 +300,11 @@ impl Workspace {
         self.search.running = true;
         self.search.task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(Duration::from_millis(120)).await;
+            let Ok(Some(mut open)) = this.update(cx, |workspace, cx| {
+                (workspace.search.generation == generation && !cancellation.is_canceled()).then(|| workspace.open_sources(cx))
+            }) else {
+                return;
+            };
             let result = cx
                 .background_executor()
                 .spawn(async move {

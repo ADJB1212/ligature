@@ -127,38 +127,54 @@ pub struct Diagnostic {
 
 #[derive(Clone, Debug, Default)]
 pub struct Store {
-    entries: BTreeMap<(PathBuf, Provider), Vec<Diagnostic>>,
+    entries: BTreeMap<PathBuf, BTreeMap<Provider, Vec<Diagnostic>>>,
+    retained: usize,
 }
 
 impl Store {
     pub fn replace(&mut self, path: PathBuf, provider: Provider, mut diagnostics: Vec<Diagnostic>) {
-        self.entries.remove(&(path.clone(), provider.clone()));
-        let retained: usize = self.entries.values().map(Vec::len).sum();
-        diagnostics.truncate(MAX_DIAGNOSTICS.min(MAX_STORE_DIAGNOSTICS.saturating_sub(retained)));
+        let providers = self.entries.entry(path.clone()).or_default();
+        if let Some(previous) = providers.remove(&provider) {
+            self.retained -= previous.len();
+        }
+        diagnostics.truncate(MAX_DIAGNOSTICS.min(MAX_STORE_DIAGNOSTICS.saturating_sub(self.retained)));
         for diagnostic in &mut diagnostics {
             bound_message(&mut diagnostic.message);
             diagnostic.path = Some(path.clone());
             diagnostic.provider = provider.clone();
         }
         if diagnostics.is_empty() {
-            self.entries.remove(&(path, provider));
+            if providers.is_empty() {
+                self.entries.remove(&path);
+            }
         } else {
-            self.entries.insert((path, provider), diagnostics);
+            self.retained += diagnostics.len();
+            providers.insert(provider, diagnostics);
         }
     }
 
     pub fn document(&self, path: &std::path::Path, provider: &Provider) -> &[Diagnostic] {
-        self.entries.get(&(path.into(), provider.clone())).map_or(&[], Vec::as_slice)
+        self.entries
+            .get(path)
+            .and_then(|providers| providers.get(provider))
+            .map_or(&[], Vec::as_slice)
     }
 
     pub fn clear_document(&mut self, path: &std::path::Path) {
-        self.entries.retain(|(source, _), _| source != path);
+        if let Some(providers) = self.entries.remove(path) {
+            self.retained -= providers.values().map(Vec::len).sum::<usize>();
+        }
     }
     pub fn clear_provider(&mut self, provider: &Provider) {
-        self.entries.retain(|(_, source), _| source != provider);
+        self.entries.retain(|_, providers| {
+            if let Some(removed) = providers.remove(provider) {
+                self.retained -= removed.len();
+            }
+            !providers.is_empty()
+        });
     }
     pub fn iter(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.entries.values().flatten()
+        self.entries.values().flat_map(|providers| providers.values()).flatten()
     }
 }
 
@@ -176,6 +192,39 @@ pub fn grouped(diagnostics: &[Diagnostic]) -> BTreeMap<(Option<PathBuf>, Severit
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacement_and_provider_removal_release_capacity_for_other_documents() {
+        let mut store = Store::default();
+        let server = Provider::LanguageServer("Texlab".into());
+        let build = Provider::Build(BuildId(1));
+        let diagnostic = Diagnostic {
+            severity: Severity::Warning,
+            provider: server.clone(),
+            message: "problem".into(),
+            path: None,
+            range: None,
+        };
+        for index in 0..5 {
+            for provider in [&server, &build] {
+                store.replace(
+                    format!("/p/{index}.tex").into(),
+                    provider.clone(),
+                    vec![diagnostic.clone(); MAX_DIAGNOSTICS],
+                );
+            }
+        }
+        store.replace("/p/0.tex".into(), server.clone(), vec![diagnostic.clone()]);
+        store.replace("/p/new.tex".into(), server.clone(), vec![diagnostic.clone(); MAX_DIAGNOSTICS]);
+        assert_eq!(store.document(std::path::Path::new("/p/new.tex"), &server).len(), MAX_DIAGNOSTICS - 1);
+        assert_eq!(store.iter().count(), MAX_STORE_DIAGNOSTICS);
+        store.clear_provider(&server);
+        assert_eq!(store.iter().count(), 5 * MAX_DIAGNOSTICS);
+        store.clear_document(std::path::Path::new("/p/0.tex"));
+        store.replace("/p/new.tex".into(), server.clone(), vec![diagnostic; MAX_DIAGNOSTICS]);
+        assert_eq!(store.document(std::path::Path::new("/p/new.tex"), &server).len(), MAX_DIAGNOSTICS);
+        assert_eq!(store.iter().count(), 5 * MAX_DIAGNOSTICS);
+    }
 
     #[test]
     fn diagnostic_retention_bounds_counts_and_unicode_messages() {

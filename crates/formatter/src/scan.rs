@@ -60,9 +60,10 @@ pub(super) fn scan(line: &str) -> Vec<Token<'_>> {
                 }
                 "\\begin" | "\\end" => {
                     let rest = line[end..].trim_start_matches([' ', '\t']);
-                    if let Some(name) = rest.strip_prefix('{').and_then(|rest| rest.split_once('}').map(|(name, _)| name))
-                        && !name.is_empty()
-                        && !name.contains(['{', '\\', '%'])
+                    if let Some(name) = rest.strip_prefix('{').and_then(|rest| {
+                        let end = rest.find(['}', '{', '\\', '%'])?;
+                        (rest.as_bytes()[end] == b'}').then_some(&rest[..end])
+                    }) && !name.is_empty()
                     {
                         end = line.len() - rest.len() + name.len() + 2;
                         if value == "\\begin" { Kind::Begin(name) } else { Kind::End(name) }
@@ -96,4 +97,21 @@ pub(super) fn scan(line: &str) -> Vec<Token<'_>> {
         tokens.push(Token { start, end, kind });
     }
     tokens
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeated_malformed_environments_preserve_the_following_valid_environment() {
+        for command in ["begin", "end"] {
+            let line = format!("{}quote}}", format!("\\{command}{{").repeat(10_000));
+            let tokens = scan(&line);
+            assert_eq!(tokens.iter().filter(|token| matches!(token.kind, Kind::Command)).count(), 9_999);
+            let last = tokens.last().unwrap();
+            assert_eq!(last.end, line.len());
+            assert!(matches!(last.kind, Kind::Begin("quote") | Kind::End("quote")));
+        }
+    }
 }

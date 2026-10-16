@@ -1,6 +1,29 @@
 use std::path::PathBuf;
 
-use ligature_bibliography::{Bibliography, Category, Index, parse};
+use ligature_bibliography::{Bibliography, Category, Index, highlights, parse};
+
+#[test]
+fn highlight_scanning_matches_full_parsing_through_incomplete_input() {
+    let text = "% 日本\n@string{j={Journal}}\n@book(key,title=j # \" {é} \\\" text\",year=2026)\n@comment{ignored {nested}}\n@misc{broken,note={unclosed\n@book{next,title={😀}}";
+    for end in text.char_indices().map(|(index, _)| index).chain([text.len()]) {
+        let prefix = &text[..end];
+        assert_eq!(highlights(prefix), parse(prefix).highlights, "prefix {end}");
+    }
+}
+
+#[test]
+fn highlight_scanning_does_not_expand_exponentially_growing_strings() {
+    use std::fmt::Write;
+
+    let mut text = String::from("@string{s0={x}}\n");
+    for index in 1..=64 {
+        writeln!(text, "@string{{s{index}=s{} # s{}}}", index - 1, index - 1).unwrap();
+    }
+    text.push_str("@book{key,title=s64}");
+    let ranges = highlights(&text);
+    assert_eq!(ranges.iter().filter(|highlight| highlight.category == Category::Value).count(), 130);
+    assert!(ranges.iter().all(|highlight| text.get(highlight.range.clone()).is_some()));
+}
 
 fn keys(bibliography: &Bibliography) -> Vec<&str> {
     bibliography.entries.iter().map(|entry| entry.key.as_str()).collect()

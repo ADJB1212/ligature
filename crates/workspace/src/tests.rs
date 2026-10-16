@@ -1658,6 +1658,33 @@ fn project_results_open_at_positions_after_unrelated_edits() {
 }
 
 #[test]
+fn project_search_after_debounce_keeps_dirty_text_and_captures_current_disk_contents() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("main.tex");
+    fs::write(&path, "disk cat").unwrap();
+    let mut cx = TestAppContext::single();
+    let (window, root) = workspace(&mut cx);
+    open_project(&mut cx, window, directory.path());
+    open(&mut cx, window, &path);
+    type_text(&mut cx, &root, "local cat ");
+    show_search(&mut cx, window, true);
+    search_query(&mut cx, &root, "cat");
+    root.update(&mut cx, |workspace, _| {
+        workspace.watch_task = None;
+        workspace.watcher = None;
+    });
+    fs::write(&path, "new disk contents").unwrap();
+    finish_project_search(&mut cx);
+    root.read_with(&cx, |workspace, _| {
+        assert_eq!(workspace.search.results.count(), 2);
+        let source = &workspace.search.results.files[0].source;
+        assert_eq!(source.text, "local cat disk cat");
+        assert_eq!(source.disk, FileState::Present(b"new disk contents".to_vec()));
+        assert!(source.buffer.is_some());
+    });
+}
+
+#[test]
 fn project_replacement_preview_reports_changed_files_and_edits_open_buffers_with_undo() {
     let dir = tempfile::tempdir().unwrap();
     let opened = dir.path().join("opened.tex");

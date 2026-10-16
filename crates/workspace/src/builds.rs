@@ -405,8 +405,12 @@ impl Workspace {
             })
             .detach();
         self.build_ui.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let mut version = None;
             loop {
-                let snapshot = job.snapshot();
+                let Some(snapshot) = job.snapshot_if_changed(&mut version) else {
+                    cx.background_executor().timer(Duration::from_millis(40)).await;
+                    continue;
+                };
                 let finished = matches!(snapshot.state, BuildState::Succeeded | BuildState::Failed | BuildState::Canceled);
                 if this
                     .update_in(cx, |workspace, _, cx| {

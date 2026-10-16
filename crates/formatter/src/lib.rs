@@ -82,14 +82,14 @@ pub fn format_with_options(text: &str, options: &Options) -> String {
     let mut output = String::with_capacity(text.len());
     for line in formatter.lines {
         output.push_str(&line.text);
-        output.push_str(&line.ending);
+        output.push_str(line.ending);
     }
     output
 }
 
 struct Line {
     text: String,
-    ending: String,
+    ending: &'static str,
     protected: bool,
 }
 
@@ -100,7 +100,7 @@ struct Environment {
 
 struct Formatter<'a> {
     options: &'a Options,
-    newline: &'a str,
+    newline: &'static str,
     lines: Vec<Line>,
     environments: Vec<Environment>,
     groups: Vec<char>,
@@ -114,16 +114,21 @@ impl Formatter<'_> {
         let text = if raw.ends_with("\r\n") { text.strip_suffix('\r').unwrap() } else { text };
         self.lines.push(Line {
             text: text.to_owned(),
-            ending: raw[text.len()..].to_owned(),
+            ending: if raw.ends_with("\r\n") {
+                "\r\n"
+            } else if raw.ends_with('\n') {
+                "\n"
+            } else {
+                ""
+            },
             protected: true,
         });
     }
 
     fn line(&mut self, raw: &str) {
         let line = raw.strip_suffix("\r\n").or_else(|| raw.strip_suffix('\n')).unwrap_or(raw);
-        if let Some(environment) = &self.verbatim {
-            let end = format!("\\end{{{environment}}}");
-            if line.trim_start().starts_with(&end) {
+        if let Some(end) = &self.verbatim {
+            if line.trim_start().starts_with(end) {
                 self.verbatim = None;
             }
             self.raw(raw);
@@ -169,7 +174,7 @@ impl Formatter<'_> {
                 }
                 let end = format!("\\end{{{name}}}");
                 if !line[token.end..].contains(&end) {
-                    self.verbatim = Some((*name).to_owned());
+                    self.verbatim = Some(end);
                 }
                 self.raw(&raw[start..]);
                 return;
@@ -248,7 +253,7 @@ impl Formatter<'_> {
     fn push(&mut self, text: String) {
         self.lines.push(Line {
             text,
-            ending: self.newline.to_owned(),
+            ending: self.newline,
             protected: false,
         });
     }

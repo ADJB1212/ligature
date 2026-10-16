@@ -62,13 +62,27 @@ pub struct BuildSnapshot {
     pub sources: Option<Arc<crate::SourceSnapshot>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuildVersion {
+    id: BuildId,
+    revision: u64,
+}
+
 #[derive(Default)]
 struct Shared {
     snapshot: BuildSnapshot,
+    revision: u64,
     canceled: bool,
     started: bool,
     tex_log_available: bool,
     status_output: Option<String>,
+}
+
+impl Shared {
+    fn snapshot_mut(&mut self) -> &mut BuildSnapshot {
+        self.revision = self.revision.wrapping_add(1);
+        &mut self.snapshot
+    }
 }
 
 #[derive(Clone)]
@@ -136,16 +150,16 @@ impl BuildJob {
             return;
         }
         shared.started = true;
-        shared.snapshot.state = if shared.canceled { BuildState::Canceled } else { BuildState::Failed };
+        shared.snapshot_mut().state = if shared.canceled { BuildState::Canceled } else { BuildState::Failed };
         if !shared.canceled {
-            shared.snapshot.diagnostics = vec![failure_diagnostic(
+            shared.snapshot_mut().diagnostics = vec![failure_diagnostic(
                 shared.snapshot.id,
                 &BuildFailure {
                     kind: FailureKind::Installation,
                     message: message.clone(),
                 },
             )];
-            shared.snapshot.failure = Some(BuildFailure {
+            shared.snapshot_mut().failure = Some(BuildFailure {
                 kind: FailureKind::Installation,
                 message,
             });
@@ -154,6 +168,20 @@ impl BuildJob {
 
     pub fn snapshot(&self) -> BuildSnapshot {
         self.0.lock().unwrap().snapshot.clone()
+    }
+
+    /// Clone a snapshot only when it differs from the last observed version.
+    pub fn snapshot_if_changed(&self, version: &mut Option<BuildVersion>) -> Option<BuildSnapshot> {
+        let shared = self.0.lock().unwrap();
+        let current = BuildVersion {
+            id: shared.snapshot.id,
+            revision: shared.revision,
+        };
+        if *version == Some(current) {
+            return None;
+        }
+        *version = Some(current);
+        Some(shared.snapshot.clone())
     }
 
     pub fn state(&self) -> BuildState {
@@ -187,8 +215,9 @@ impl BuildJob {
                 return;
             }
             shared.started = true;
-            shared.snapshot.temporary_source = source;
-            shared.snapshot.state = BuildState::Running;
+            let snapshot = shared.snapshot_mut();
+            snapshot.temporary_source = source;
+            snapshot.state = BuildState::Running;
         }
         let result = self.execute(request, resources);
         let output = {
@@ -204,34 +233,31 @@ impl BuildJob {
         let mut shared = self.0.lock().unwrap();
         if shared.canceled {
             drop(result);
-            shared.snapshot.state = BuildState::Canceled;
-            shared.snapshot.diagnostics.clear();
-            shared.snapshot.temporary_source = None;
+            let snapshot = shared.snapshot_mut();
+            snapshot.state = BuildState::Canceled;
+            snapshot.diagnostics.clear();
+            snapshot.temporary_source = None;
         } else {
             let tex_log_available = shared.tex_log_available;
-            merge_diagnostics(&mut shared.snapshot.diagnostics, parsed, tex_log_available);
+            let snapshot = shared.snapshot_mut();
+            merge_diagnostics(&mut snapshot.diagnostics, parsed, tex_log_available);
             match result {
                 Ok((directory, mut artifacts)) => {
-                    artifacts.temporary_source.clone_from(&shared.snapshot.temporary_source);
+                    artifacts.temporary_source.clone_from(&snapshot.temporary_source);
                     let _ = directory.keep();
-                    shared.snapshot.state = BuildState::Succeeded;
-                    shared.snapshot.artifacts = Some(artifacts);
+                    snapshot.state = BuildState::Succeeded;
+                    snapshot.artifacts = Some(artifacts);
                 }
                 Err(failure) => {
                     if failure.kind == FailureKind::Installation {
-                        shared.snapshot.diagnostics.clear();
+                        snapshot.diagnostics.clear();
                     }
-                    if shared
-                        .snapshot
-                        .diagnostics
-                        .iter()
-                        .all(|diagnostic| diagnostic.severity != Severity::Error)
-                    {
-                        let diagnostic = failure_diagnostic(shared.snapshot.id, &failure);
-                        shared.snapshot.diagnostics.push(diagnostic);
+                    if snapshot.diagnostics.iter().all(|diagnostic| diagnostic.severity != Severity::Error) {
+                        let diagnostic = failure_diagnostic(snapshot.id, &failure);
+                        snapshot.diagnostics.push(diagnostic);
                     }
-                    shared.snapshot.state = BuildState::Failed;
-                    shared.snapshot.failure = Some(failure);
+                    snapshot.state = BuildState::Failed;
+                    snapshot.failure = Some(failure);
                 }
             }
         }
@@ -255,7 +281,7 @@ impl BuildJob {
             .bundle;
         let _lease = OutputLease::acquire(request.output_directory()).map_err(|message| failure(FailureKind::Output, message))?;
         let sources = Arc::new(crate::SourceSnapshot::capture(&request.project_root, request.output_directory()));
-        self.0.lock().unwrap().snapshot.sources = Some(Arc::clone(&sources));
+        self.0.lock().unwrap().snapshot_mut().sources = Some(Arc::clone(&sources));
         crate::version::verify(&resources.executable, || {
             let mut version = Command::new(&resources.executable)
                 .arg("--version")
@@ -268,7 +294,7 @@ impl BuildJob {
             Ok(version_status.success() && self.snapshot().output.trim() == format!("Tectonic {ENGINE_VERSION}"))
         })
         .map_err(|message| failure(FailureKind::Installation, message))?;
-        self.0.lock().unwrap().snapshot.output.clear();
+        self.0.lock().unwrap().snapshot_mut().output.clear();
         let directory = tempfile::Builder::new()
             .prefix("build-")
             .tempdir_in(request.output_directory())
@@ -297,7 +323,7 @@ impl BuildJob {
             if let Ok(mut file) = std::fs::File::open(path) {
                 let length = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
                 if length > LOG_LIMIT as u64 {
-                    self.0.lock().unwrap().snapshot.truncated = true;
+                    self.0.lock().unwrap().snapshot_mut().truncated = true;
                     let _ = file.seek(SeekFrom::End(-(LOG_LIMIT as i64)));
                 }
                 let mut bytes = Vec::with_capacity(length.min(LOG_LIMIT as u64) as usize);
@@ -306,7 +332,7 @@ impl BuildJob {
                         let id = self.0.lock().unwrap().snapshot.id;
                         let diagnostics = parse_tex(&String::from_utf8_lossy(&bytes), request.filesystem_root(), request.root_document(), id);
                         let mut shared = self.0.lock().unwrap();
-                        shared.snapshot.diagnostics.extend(diagnostics);
+                        shared.snapshot_mut().diagnostics.extend(diagnostics);
                         shared.tex_log_available = true;
                     }
                     self.append(format!("\n--- {} ---\n", path.file_name().unwrap().to_string_lossy()).as_bytes());
@@ -393,7 +419,7 @@ impl BuildJob {
 
     fn append(&self, bytes: &[u8]) {
         let mut shared = self.0.lock().unwrap();
-        let snapshot = &mut shared.snapshot;
+        let snapshot = shared.snapshot_mut();
         snapshot.output.push_str(&String::from_utf8_lossy(bytes));
         if snapshot.output.len() > LOG_LIMIT {
             let mut start = snapshot.output.len() - LOG_LIMIT;
@@ -432,6 +458,41 @@ impl Drop for OutputLease {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_polling_skips_unchanged_output_and_tracks_rolling_logs() {
+        let job = BuildJob::default();
+        let mut version = None;
+        assert_eq!(job.snapshot_if_changed(&mut version).unwrap().state, BuildState::Idle);
+        assert!(job.snapshot_if_changed(&mut version).is_none());
+        job.append(&vec![b'a'; LOG_LIMIT]);
+        assert_eq!(job.snapshot_if_changed(&mut version).unwrap().output.len(), LOG_LIMIT);
+        job.append(b"b");
+        assert!(job.snapshot_if_changed(&mut version).unwrap().truncated);
+        job.append(b"c");
+        let snapshot = job.snapshot_if_changed(&mut version).unwrap();
+        assert_eq!(snapshot.output.len(), LOG_LIMIT);
+        assert!(snapshot.output.ends_with("bc"));
+        assert!(job.snapshot_if_changed(&mut version).is_none());
+        let mut observer = None;
+        assert!(job.snapshot_if_changed(&mut observer).is_some());
+        assert!(job.snapshot_if_changed(&mut version).is_none());
+        job.fail_installation("missing resources".into());
+        let snapshot = job.snapshot_if_changed(&mut version).unwrap();
+        assert_eq!(snapshot.state, BuildState::Failed);
+        assert_eq!(snapshot.diagnostics.len(), 1);
+        assert!(job.snapshot_if_changed(&mut version).is_none());
+    }
+
+    #[test]
+    fn snapshot_polling_distinguishes_new_jobs_at_the_same_revision() {
+        let first = BuildJob::default();
+        let second = BuildJob::default();
+        let mut version = None;
+        let initial = first.snapshot_if_changed(&mut version).unwrap();
+        let next = second.snapshot_if_changed(&mut version).unwrap();
+        assert_ne!(initial.id, next.id);
+    }
 
     #[test]
     fn merging_diagnostics_preserves_order_and_normalizes_duplicates() {

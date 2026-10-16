@@ -175,10 +175,8 @@ fn text_end(bytes: &[u8]) -> usize {
 
 fn lex(language: Language, text: &str, offset: usize) -> (Vec<Token>, Vec<usize>) {
     if language == Language::Bibliography {
-        let bibliography = ligature_bibliography::parse(text);
         let mut checkpoints = vec![offset];
-        let tokens = bibliography
-            .highlights
+        let tokens = ligature_bibliography::highlights(text)
             .into_iter()
             .map(|highlight| {
                 use ligature_bibliography::Category as Bib;
