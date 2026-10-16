@@ -12,6 +12,7 @@ description = "Application startup, action registration, native menus, and appli
 [dependencies]
 ligature-editor.workspace = true
 ligature-ui.workspace = true
+ligature-theme.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 ligature-core.workspace = true

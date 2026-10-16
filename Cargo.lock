@@ -3291,6 +3291,7 @@ dependencies = [
  "gpui_ce_platform",
  "ligature-core",
  "ligature-editor",
+ "ligature-theme",
  "ligature-ui",
  "ligature-workspace",
 ]

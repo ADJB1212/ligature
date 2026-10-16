@@ -8,12 +8,15 @@ use ligature_workspace::{
     ToggleLanguageServer, ToggleOutline, ToggleProject, ToggleTexResources, Workspace, ZoomIn, ZoomOut,
 };
 
+mod about;
+
 /// Start the native event loop and open the workspace window.
 pub fn run() {
     gpui_platform::application().run(|cx: &mut App| {
         ligature_ui::init(cx);
         ligature_editor::init(cx);
         ligature_workspace::init(cx);
+        about::init(cx);
         cx.on_action(|_: &Quit, cx| {
             if let Some(window) = cx.windows().into_iter().find_map(|window| window.downcast::<Workspace>()) {
                 window.update(cx, |workspace, window, cx| workspace.request_quit(window, cx)).ok();
@@ -28,6 +31,8 @@ pub fn run() {
         });
         cx.set_menus(vec![
             Menu::new(APP_NAME).items([
+                MenuItem::action("About Ligature", about::OpenAbout),
+                MenuItem::separator(),
                 MenuItem::action("Settings...", OpenSettings),
                 MenuItem::separator(),
                 MenuItem::action("TeX Resources...", ToggleTexResources),
