@@ -68,16 +68,24 @@ incremental = true
 opt-level = 1
 debug = "line-directives-only"
 split-debuginfo = "unpacked"
-lto = "off"
-codegen-units = 256
+lto = false
+
+[profile.dev.package.ligature-toolchain]
+opt-level = 3
+codegen-units = 1
+debug = false
 
 [profile.test]
 incremental = true
 opt-level = 1
 debug = "line-directives-only"
 split-debuginfo = "unpacked"
-lto = "off"
-codegen-units = 256
+lto = false
+
+[profile.test.package.ligature-toolchain]
+opt-level = 3
+codegen-units = 1
+debug = false
 
 [workspace.lints.rust]
 warnings = { level = "deny", priority = -1 }

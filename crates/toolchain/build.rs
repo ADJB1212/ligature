@@ -71,10 +71,18 @@ fn build_engine() -> Result<(), String> {
         .args([
             "install",
             "tectonic",
-            "--version",
-            &format!("={ENGINE_VERSION}"),
+            "--git",
+            "https://github.com/ADJB1212/tectonic.git",
+            "--branch",
+            "master",
             "--locked",
             "--force",
+            "--config",
+            "profile.release.lto=\"fat\"",
+            "--config",
+            "profile.release.codegen-units=1",
+            "--config",
+            "profile.release.panic=\"abort\"",
             "--target",
         ])
         .arg(&target)
@@ -82,13 +90,12 @@ fn build_engine() -> Result<(), String> {
         .arg(&install)
         .arg("--target-dir")
         .arg(storage.join("tectonic-build"))
-        .arg("--jobs")
-        .arg(env::var_os("NUM_JOBS").unwrap_or_else(|| "1".into()))
         .env("TECTONIC_DEP_BACKEND", "pkg-config")
         .env("TECTONIC_PKGCONFIG_FORCE_SEMI_STATIC", "1")
         .env("PKG_CONFIG_PATH", env::join_paths(pkg_config_paths).map_err(|error| error.to_string())?)
-        .env("CFLAGS", "-std=gnu17 -fuse-ld=lld -march=native")
-        .env("CXXFLAGS", "-std=c++17 -fuse-ld=lld -march=native");
+        .env("CFLAGS", "-O3 -std=gnu17 -fuse-ld=lld -march=native -w")
+        .env("CXXFLAGS", "-O3 -std=c++17 -fuse-ld=lld -march=native -w");
+
     for name in [
         "CARGO_MAKEFLAGS",
         "MAKEFLAGS",
@@ -100,7 +107,17 @@ fn build_engine() -> Result<(), String> {
     ] {
         cargo.env_remove(name);
     }
-    run(&mut cargo)?;
+    let tty = fs::OpenOptions::new().write(true).open("/dev/tty").map_err(|error| error.to_string())?;
+
+    let status = cargo
+        .stdout(tty.try_clone().map_err(|error| error.to_string())?)
+        .stderr(tty)
+        .status()
+        .map_err(|error| error.to_string())?;
+
+    if !status.success() {
+        return Err(format!("cargo install tectonic failed: {status}"));
+    }
 
     let executable = resources.join("bin/tectonic");
     copy_executable(&install.join("bin/tectonic"), &executable)?;
@@ -153,8 +170,6 @@ fn stage_language_server(storage: &Path, resources: &Path, target: &str) -> Resu
             .arg(&install)
             .arg("--target-dir")
             .arg(storage.join("texlab-build"))
-            .arg("--jobs")
-            .arg(env::var_os("NUM_JOBS").unwrap_or_else(|| "1".into()))
             .env("CFLAGS", "-fuse-ld=lld -march=native")
             .env("CXXFLAGS", "-fuse-ld=lld -march=native");
         for name in [
