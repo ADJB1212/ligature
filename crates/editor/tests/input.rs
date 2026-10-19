@@ -10,6 +10,29 @@ fn shortcut(key: &str) -> String {
 }
 
 #[test]
+fn native_typing_pairs_delimiters_and_paste_keeps_literal_text() {
+    let mut cx = TestAppContext::single();
+    cx.update(init);
+    let window = cx.add_window(|_, cx| Editor::new(Buffer::from_text(""), cx));
+    let editor = window.root(&mut cx).unwrap();
+    cx.update_window(window.into(), |_, window, cx| {
+        window.focus(&editor.focus_handle(cx), cx);
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    for character in ["\\", "[", "{", "x", "}", "\\", "]"] {
+        cx.simulate_input(window.into(), character);
+    }
+    editor.read_with(&cx, |editor, _| {
+        assert_eq!(editor.state().text(), "\\[{x}\\]");
+        assert_eq!(editor.state().caret(), 7);
+    });
+    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("(".to_owned())));
+    cx.simulate_keystrokes(window.into(), &shortcut("v"));
+    assert_eq!(editor.read_with(&cx, |editor, _| editor.state().text().to_owned()), "\\[{x}\\](");
+}
+
+#[test]
 fn native_typing_clipboard_shortcuts_and_history_work_in_focused_editor() {
     let mut cx = TestAppContext::single();
     cx.update(init);

@@ -80,9 +80,9 @@ fn build_engine() -> Result<(), String> {
             "--config",
             "profile.release.lto=\"fat\"",
             "--config",
-            "profile.release.codegen-units=1",
+            "profile.release.incremental=false",
             "--config",
-            "profile.release.panic=\"abort\"",
+            "profile.release.codegen-units=1",
             "--target",
         ])
         .arg(&target)

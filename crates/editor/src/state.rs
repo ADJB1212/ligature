@@ -3,6 +3,9 @@ use std::ops::Range;
 use ligature_buffer::{Buffer, ByteOffset, Position, SavePoint};
 use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 
+#[path = "pairs.rs"]
+mod pairs;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LineEnding {
     Lf,
@@ -47,6 +50,7 @@ pub struct EditorState {
     line_ending: LineEnding,
     indentation: Indentation,
     tab_size: usize,
+    auto_closers: Vec<pairs::AutoCloser>,
 }
 
 impl EditorState {
@@ -65,6 +69,7 @@ impl EditorState {
             line_ending,
             indentation: Indentation::Spaces,
             tab_size: 4,
+            auto_closers: Vec::new(),
         }
     }
 
@@ -93,6 +98,7 @@ impl EditorState {
         let anchor = self.anchor;
         let caret = self.caret;
         self.buffer.reload(text);
+        self.auto_closers.clear();
         self.composition = None;
         self.line_ending = if text.contains("\r\n") { LineEnding::CrLf } else { LineEnding::Lf };
         self.select(anchor, caret);
@@ -241,6 +247,7 @@ impl EditorState {
             .buffer
             .text_range(ByteOffset(range.start), ByteOffset(range.end))
             .expect("valid editor range");
+        self.adjust_auto_closers(range.start().0..range.end().0, text.len());
         if typing && range.is_empty() {
             self.buffer.type_text(range.start(), text).expect("valid typing offset");
         } else {
@@ -279,6 +286,9 @@ impl EditorState {
     pub fn delete(&mut self, backward: bool) {
         self.commit_composition();
         let mut range = self.selection();
+        if backward && range.is_empty() && self.delete_empty_pair() {
+            return;
+        }
         if range.is_empty() {
             if snap(self.text(), self.caret) != self.caret {
                 range = previous(self.text(), self.caret)..next(self.text(), self.caret);
@@ -313,6 +323,7 @@ impl EditorState {
             return;
         }
         if let Some(edit) = self.buffer.undo() {
+            self.auto_closers.clear();
             self.select(edit.new_range.end().0, edit.new_range.end().0);
         }
     }
@@ -320,6 +331,7 @@ impl EditorState {
     pub fn redo(&mut self) {
         self.commit_composition();
         if let Some(edit) = self.buffer.redo() {
+            self.auto_closers.clear();
             self.select(edit.new_range.end().0, edit.new_range.end().0);
         }
     }
@@ -384,6 +396,9 @@ impl EditorState {
             self.mark(range, text, None);
             self.commit_composition();
         } else {
+            if range.is_none() && self.type_delimiter(text) {
+                return;
+            }
             self.replace(range.unwrap_or_else(|| self.selection()), text, true);
         }
     }

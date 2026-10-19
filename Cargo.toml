@@ -74,6 +74,7 @@ lto = false
 opt-level = 3
 codegen-units = 1
 debug = false
+incremental = false
 
 [profile.test]
 incremental = true
@@ -86,6 +87,7 @@ lto = false
 opt-level = 3
 codegen-units = 1
 debug = false
+incremental = false
 
 [workspace.lints.rust]
 warnings = { level = "deny", priority = -1 }

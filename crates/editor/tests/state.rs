@@ -5,6 +5,153 @@ fn editor(text: &str) -> EditorState {
     EditorState::new(Buffer::from_text(text))
 }
 
+fn type_text(editor: &mut EditorState, text: &str) {
+    for character in text.chars() {
+        editor.commit_text(None, character.encode_utf8(&mut [0; 4]));
+    }
+}
+
+#[test]
+fn typed_delimiters_insert_and_skip_matching_closers() {
+    for (opening, closing) in [
+        ("{", "}"),
+        ("[", "]"),
+        ("(", ")"),
+        ("$", "$"),
+        ("\\[", "\\]"),
+        ("\\(", "\\)"),
+        ("\\{", "\\}"),
+    ] {
+        let mut editor = editor("");
+        type_text(&mut editor, opening);
+        assert_eq!(editor.text(), format!("{opening}{closing}"));
+        assert_eq!(editor.caret(), opening.len());
+        type_text(&mut editor, "猫");
+        type_text(&mut editor, closing);
+        assert_eq!(editor.text(), format!("{opening}猫{closing}"));
+        assert_eq!(editor.caret(), editor.text().len());
+    }
+}
+
+#[test]
+fn double_dollar_math_expands_and_skips_both_closers() {
+    let mut editor = editor("");
+    type_text(&mut editor, "$$");
+    assert_eq!(editor.text(), "$$$$");
+    assert_eq!(editor.caret(), 2);
+    type_text(&mut editor, "x$$");
+    assert_eq!(editor.text(), "$$x$$");
+    assert_eq!(editor.caret(), 5);
+}
+
+#[test]
+fn backspace_removes_empty_generated_pairs_and_undo_restores_text() {
+    for opening in ["{", "[", "(", "$", "$$", "\\[", "\\(", "\\{"] {
+        let mut editor = editor("");
+        type_text(&mut editor, opening);
+        let paired = editor.text().to_owned();
+        editor.delete(true);
+        assert_eq!(editor.text(), "");
+        editor.undo();
+        assert_eq!(editor.text(), paired);
+    }
+}
+
+#[test]
+fn typing_openers_wraps_unicode_selections_in_one_undo_step() {
+    for reversed in [false, true] {
+        let mut editor = editor("a猫😀z");
+        editor.select(if reversed { 8 } else { 1 }, if reversed { 1 } else { 8 });
+        type_text(&mut editor, "{");
+        assert_eq!(editor.text(), "a{猫😀}z");
+        assert_eq!(editor.selected_text(), "猫😀");
+        assert_eq!(editor.caret() < editor.anchor(), reversed);
+        editor.undo();
+        assert_eq!(editor.text(), "a猫😀z");
+    }
+}
+
+#[test]
+fn nested_pairs_survive_edits_before_their_closers() {
+    let mut editor = editor("");
+    type_text(&mut editor, "{(x)}");
+    assert_eq!(editor.text(), "{(x)}");
+    assert_eq!(editor.caret(), 5);
+    editor.select(0, 0);
+    type_text(&mut editor, "[");
+    assert_eq!(editor.text(), "[{(x)}");
+}
+
+#[test]
+fn literal_input_replacements_composition_and_existing_closers_are_preserved() {
+    let mut editor = editor("");
+    type_text(&mut editor, "\\$ ");
+    assert_eq!(editor.text(), "\\$ ");
+    editor.commit_text(None, "{pasted}");
+    assert_eq!(editor.text(), "\\$ {pasted}");
+    editor.commit_text(Some(0..0), "(");
+    assert!(editor.text().starts_with("(\\$"));
+    editor.select_all();
+    editor.mark(None, "{", None);
+    editor.commit_text(None, "{");
+    assert_eq!(editor.text(), "{");
+    editor.reload("()".to_owned());
+    editor.select(1, 1);
+    type_text(&mut editor, ")");
+    assert_eq!(editor.text(), "())");
+}
+
+#[test]
+fn replacing_generated_closers_invalidates_them() {
+    let mut editor = editor("");
+    type_text(&mut editor, "(");
+    editor.replace(1..2, ")", false);
+    editor.select(1, 1);
+    type_text(&mut editor, ")");
+    assert_eq!(editor.text(), "())");
+}
+
+#[test]
+fn escaped_dollars_inside_math_do_not_consume_the_closer() {
+    let mut editor = editor("");
+    type_text(&mut editor, "$\\$");
+    assert_eq!(editor.text(), "$\\$$");
+    assert_eq!(editor.caret(), 3);
+    type_text(&mut editor, "x$");
+    assert_eq!(editor.text(), "$\\$x$");
+    assert_eq!(editor.caret(), 5);
+}
+
+#[test]
+fn commands_inside_display_math_preserve_the_generated_closer() {
+    let mut editor = editor("");
+    type_text(&mut editor, "\\[\\frac{a}{b}");
+    assert_eq!(editor.text(), "\\[\\frac{a}{b}\\]");
+    assert_eq!(editor.caret(), editor.text().len() - 2);
+    type_text(&mut editor, "\\]");
+    assert_eq!(editor.text(), "\\[\\frac{a}{b}\\]");
+    assert_eq!(editor.caret(), editor.text().len());
+}
+
+#[test]
+fn nested_pairs_insert_before_generated_latex_closers() {
+    let mut editor = editor("");
+    type_text(&mut editor, "\\[{(");
+    assert_eq!(editor.text(), "\\[{()}\\]");
+    editor.delete(true);
+    assert_eq!(editor.text(), "\\[{}\\]");
+    editor.delete(true);
+    assert_eq!(editor.text(), "\\[\\]");
+}
+
+#[test]
+fn escaped_braces_do_not_consume_group_closers() {
+    let mut editor = editor("");
+    type_text(&mut editor, "{\\}");
+    assert_eq!(editor.text(), "{\\}}");
+    assert_eq!(editor.caret(), 3);
+}
+
 #[test]
 fn composition_line_queries_follow_multiline_updates_commit_and_cancel() {
     let original = "head\r\nold\n猫\r\n";
