@@ -156,6 +156,9 @@ impl BuildRequest {
             .stdin(Stdio::null())
             .args(["--color", "never", "--untrusted", "--only-cached", "--outfmt", "pdf", "--bundle"])
             .arg(&resources.bundle)
+            .arg("--incremental")
+            .arg("--incremental-cache-dir")
+            .arg(self.output_directory.join(".tectonic-incremental"))
             .arg("--outdir")
             .arg(output_directory);
         if self.options.synctex {
@@ -414,6 +417,9 @@ mod tests {
                 "pdf",
                 "--bundle",
                 resources.bundle.to_str().unwrap(),
+                "--incremental",
+                "--incremental-cache-dir",
+                request.output_directory().join(".tectonic-incremental").to_str().unwrap(),
                 "--outdir",
                 request.output_directory().to_str().unwrap(),
                 "--synctex",
@@ -473,6 +479,92 @@ mod tests {
         for flag in ["--synctex", "--keep-logs", "--keep-intermediates", "--reruns"] {
             assert!(!args.iter().any(|arg| *arg == flag));
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn incremental_jobs_resume_after_edits_and_preserve_published_artifacts_on_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let request = ready(&project, &BuildSettings::default());
+        let resources = BundledResources::new(Path::new(ligature_toolchain::BUILT_RESOURCE_DIRECTORY), &directory.path().join("cache")).unwrap();
+        std::fs::write(
+            request.root_document(),
+            format!(
+                "\\documentclass{{article}}\n\\begin{{document}}\n{}\\input{{ending}}\n\\end{{document}}\n",
+                "A paragraph before the edited input, with enough text for checkpointing.\\par\n".repeat(400)
+            ),
+        )
+        .unwrap();
+        let ending = request.filesystem_root().join("ending.tex");
+        std::fs::write(&ending, "Original ending.\n").unwrap();
+        let first = BuildJob::default();
+        first.run(&request, &resources);
+        let first = first.snapshot();
+        assert_eq!(first.state, BuildState::Succeeded, "{first:?}");
+        let original = first.artifacts.unwrap();
+        let original_pdf = std::fs::read(&original.pdf).unwrap();
+
+        std::fs::write(&ending, "Edited ending.\n").unwrap();
+        let second = BuildJob::default();
+        second.run(&request, &resources);
+        let second = second.snapshot();
+        assert_eq!(second.state, BuildState::Succeeded, "{second:?}");
+        assert!(second.output.contains("resumed TeX execution"), "{}", second.output);
+        let updated = second.artifacts.unwrap();
+        assert_ne!(original.pdf, updated.pdf);
+        assert_eq!(std::fs::read(&original.pdf).unwrap(), original_pdf);
+        let updated_pdf = std::fs::read(&updated.pdf).unwrap();
+        assert_ne!(original_pdf, updated_pdf);
+        let pages = ligature_pdf::Document::load(&updated.pdf).unwrap().pages().len();
+        let mapping = ligature_synctex::Mapping::load(updated.synctex.as_ref().unwrap(), &updated.source_directory, pages).unwrap();
+        assert!(
+            mapping
+                .forward(&ligature_synctex::SourcePosition {
+                    path: ending.clone(),
+                    line: 1,
+                    column: 1
+                })
+                .is_some()
+        );
+
+        std::fs::write(&ending, "\\undefinedligaturecommand\n").unwrap();
+        let failed = BuildJob::default();
+        failed.run(&request, &resources);
+        assert_eq!(failed.state(), BuildState::Failed);
+        assert_eq!(std::fs::read(&updated.pdf).unwrap(), updated_pdf);
+        assert!(!request.output_directory().join(".ligature-work").exists());
+
+        std::fs::write(&ending, "Repaired ending.\n").unwrap();
+        let repaired = BuildJob::default();
+        repaired.run(&request, &resources);
+        let repaired = repaired.snapshot();
+        assert_eq!(repaired.state, BuildState::Succeeded, "{repaired:?}");
+        assert!(repaired.output.contains("resumed TeX execution"), "{}", repaired.output);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jobs_discard_abandoned_engine_outputs_without_removing_checkpoints() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = project(directory.path());
+        let request = ready(&project, &BuildSettings::default());
+        let resources = resources(&project, "#!/bin/sh\nexit 0\n");
+        let working = request.output_directory().join(".ligature-work");
+        let cache = request.output_directory().join(".tectonic-incremental");
+        std::fs::create_dir_all(&working).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(working.join("main α.pdf"), b"old PDF").unwrap();
+        std::fs::write(cache.join("checkpoint"), b"saved checkpoint").unwrap();
+        let job = BuildJob::default();
+        job.run(&request, &resources);
+        let snapshot = job.snapshot();
+        assert_eq!(snapshot.state, BuildState::Failed);
+        assert!(snapshot.failure.unwrap().message.contains("without producing a PDF"));
+        assert!(snapshot.artifacts.is_none());
+        assert!(!working.exists());
+        assert_eq!(std::fs::read(cache.join("checkpoint")).unwrap(), b"saved checkpoint");
+        assert_eq!(std::fs::read_dir(request.output_directory()).unwrap().count(), 1);
     }
 
     #[cfg(target_os = "macos")]
@@ -834,7 +926,14 @@ mod tests {
         assert_eq!(job.snapshot().failure.unwrap().kind, FailureKind::Typesetting);
         assert!(job.snapshot().artifacts.is_none());
         assert_eq!(std::fs::read(path).unwrap(), pdf);
-        assert_eq!(std::fs::read_dir(request.output_directory()).unwrap().count(), 2);
+        let mut retained: Vec<_> = std::fs::read_dir(request.output_directory())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        retained.sort();
+        assert_eq!(retained.len(), 3, "{retained:?}");
+        assert_eq!(retained[0], ".tectonic-incremental");
+        assert!(retained[1..].iter().all(|name| name.to_str().unwrap().starts_with("build-")));
     }
 
     #[test]

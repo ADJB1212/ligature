@@ -14,6 +14,27 @@ use std::{
 
 pub const LOG_LIMIT: usize = 256 * 1024;
 
+struct EngineOutput(PathBuf);
+
+impl EngineOutput {
+    fn prepare(request: &BuildRequest) -> Result<Self, String> {
+        let path = request.output_directory().join(".ligature-work");
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("Could not clear engine output: {error}")),
+        }
+        std::fs::create_dir(&path).map_err(|error| format!("Could not prepare engine output: {error}"))?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for EngineOutput {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BuildState {
     #[default]
@@ -304,13 +325,21 @@ impl BuildJob {
         }
         let mut diagnostic_request = request.clone();
         diagnostic_request.options.keep_logs = true;
+        let engine_output = EngineOutput::prepare(request).map_err(|message| failure(FailureKind::Output, message))?;
         let mut child = diagnostic_request
-            .command_with_output(resources, directory.path())
+            .command_with_output(resources, &engine_output.0)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| failure(FailureKind::Installation, format!("Could not launch bundled Tectonic: {error}")))?;
         let status = self.collect(&mut child).map_err(|message| failure(FailureKind::Output, message))?;
+        for entry in
+            std::fs::read_dir(&engine_output.0).map_err(|error| failure(FailureKind::Output, format!("Could not read engine output: {error}")))?
+        {
+            let entry = entry.map_err(|error| failure(FailureKind::Output, format!("Could not read engine output: {error}")))?;
+            std::fs::rename(entry.path(), directory.path().join(entry.file_name()))
+                .map_err(|error| failure(FailureKind::Output, format!("Could not retain engine output: {error}")))?;
+        }
         {
             let mut shared = self.0.lock().unwrap();
             shared.status_output = Some(shared.snapshot.output.clone());

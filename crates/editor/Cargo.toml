@@ -25,5 +25,8 @@ unicode-segmentation = { version = "1.13", default-features = false }
 gpui = { workspace = true, default-features = false, features = ["test-support"] }
 gpui_platform = { workspace = true, default-features = false, features = ["test-support"] }
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui_apple = { package = "gpui_ce_apple", version = "0.3", default-features = false }
+
 [lints]
 workspace = true

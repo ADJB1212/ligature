@@ -2,8 +2,8 @@ use std::{ops::Range, sync::Arc, time::Duration};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementInputHandler, EntityInputHandler, FocusHandle, Focusable, Font, IntoElement, KeyBinding,
-    KeyDownEvent, MouseButton, Pixels, Point, Render, ShapedLine, SharedString, Task, TextRun, UTF16Selection, Window, actions, canvas, div, fill,
-    point, prelude::*, px, size,
+    KeyDownEvent, MouseButton, PaintQuad, Pixels, Point, Render, ShapedText, SharedString, Task, TextRun, UTF16Selection, Window, actions, canvas,
+    div, point, prelude::*, px, size,
 };
 use ligature_buffer::Buffer;
 use ligature_theme::{colors, typography};
@@ -533,12 +533,11 @@ impl Editor {
         let mut byte = 0;
         for part in text.split('\t') {
             let shaped = self.shape_source(part.to_owned().into(), range.start + byte, window);
-            let mut glyphs = shaped.runs.iter().flat_map(|run| &run.glyphs).peekable();
             for (offset, _) in part.grapheme_indices(true) {
-                while glyphs.peek().is_some_and(|glyph| glyph.index < offset) {
-                    glyphs.next();
-                }
-                boundaries.push((byte + offset, x + glyphs.peek().map_or(shaped.width, |glyph| glyph.position.x)));
+                let position = shaped
+                    .visual_position_for_byte_index(offset, self.line_height)
+                    .map_or(shaped.width, |position| position.x);
+                boundaries.push((byte + offset, x + position));
             }
             x += shaped.width;
             byte += part.len();
@@ -557,25 +556,29 @@ impl Editor {
         }
     }
 
-    fn shape_text(&self, text: SharedString, window: &Window, muted: bool) -> ShapedLine {
+    fn shape_text(&self, text: SharedString, window: &Window, muted: bool) -> ShapedText {
         let font = self.font.clone().unwrap_or_else(|| window.text_style().font());
-        window.text_system().shape_line(
-            text.clone(),
-            self.font_size,
-            &[TextRun {
-                len: text.len(),
-                font,
-                color: if muted { colors().muted_text } else { colors().text },
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-                letter_spacing: None,
-            }],
-            None,
-        )
+        window
+            .text_system()
+            .shape_text(
+                text.clone(),
+                self.font_size,
+                &[TextRun {
+                    len: text.len(),
+                    font,
+                    color: if muted { colors().muted_text } else { colors().text },
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                    letter_spacing: None,
+                }],
+                None,
+                None,
+            )
+            .expect("editor text shaping failed")
     }
 
-    fn shape_source(&self, text: SharedString, start: usize, window: &Window) -> ShapedLine {
+    fn shape_source(&self, text: SharedString, start: usize, window: &Window) -> ShapedText {
         let Some(highlights) = self.highlights.as_ref().filter(|_| self.state.marked_range().is_none()) else {
             return self.shape_text(text, window, false);
         };
@@ -606,7 +609,10 @@ impl Editor {
             cursor = token_end;
         }
         append(end - cursor, ligature_syntax::Category::Text);
-        window.text_system().shape_line(text, self.font_size, &runs, None)
+        window
+            .text_system()
+            .shape_text(text, self.font_size, &runs, None, None)
+            .expect("editor text shaping failed")
     }
 
     fn hit_test(&self, position: Point<Pixels>, window: &Window) -> usize {
@@ -747,7 +753,7 @@ struct Metrics {
 
 struct LayoutLine {
     range: Range<usize>,
-    pieces: Vec<(Pixels, ShapedLine)>,
+    pieces: Vec<(Pixels, ShapedText)>,
     boundaries: Vec<(usize, Pixels)>,
     width: Pixels,
 }
@@ -860,7 +866,7 @@ impl Editor {
         utf16_offset(self.state.text(), range.start)..utf16_offset(self.state.text(), range.end)
     }
 
-    fn layout(&mut self, bounds: Bounds<Pixels>, window: &mut Window) -> Vec<(usize, LayoutLine, ShapedLine)> {
+    fn layout(&mut self, bounds: Bounds<Pixels>, window: &mut Window) -> Vec<(usize, LayoutLine, ShapedText)> {
         let resized = self.bounds.size != bounds.size;
         self.bounds = bounds;
         let font = window.text_style().font();
@@ -913,7 +919,7 @@ impl Editor {
         lines
     }
 
-    fn paint(&self, lines: Vec<(usize, LayoutLine, ShapedLine)>, window: &mut Window, cx: &mut App) {
+    fn paint(&self, lines: Vec<(usize, LayoutLine, ShapedText)>, window: &mut Window, cx: &mut App) {
         let colors = colors();
         let text_bounds = Bounds::new(
             point(self.bounds.left() + self.gutter, self.bounds.top()),
@@ -927,120 +933,140 @@ impl Editor {
         } else {
             &[]
         };
-        window.with_content_mask(Some(gpui::ContentMask { bounds: text_bounds }), |window| {
-            for (index, line, _) in &lines {
-                let origin = point(
-                    text_bounds.left() - self.scroll.x,
-                    self.bounds.top() + self.line_height * *index as f32 - self.scroll.y,
-                );
-                if *index == caret_line && !self.read_only {
-                    window.paint_quad(fill(
-                        Bounds::new(point(text_bounds.left(), origin.y), size(text_bounds.size.width, self.line_height)),
-                        colors.current_line,
-                    ));
-                }
-                let line_end = if index + 1 < self.state.line_count() {
-                    self.state.line_range(index + 1).start
-                } else {
-                    line.range.end
-                };
-                let first_match = self.search_matches.partition_point(|range| range.end <= line.range.start);
-                for matched in self.search_matches[first_match..].iter().take_while(|range| range.start < line_end) {
-                    let start = line.x_for_byte(matched.start.max(line.range.start));
-                    let end = line.x_for_byte(matched.end.min(line.range.end));
-                    window.paint_quad(fill(
-                        Bounds::new(point(origin.x + start, origin.y), size((end - start).max(px(1.0)), self.line_height)),
-                        colors.search_match,
-                    ));
-                }
-                if selection.start < line_end && selection.end > line.range.start {
-                    let start = line.x_for_byte(selection.start.max(line.range.start));
-                    let end = line.x_for_byte(selection.end.min(line.range.end)) + if selection.end > line.range.end { px(8.0) } else { px(0.0) };
-                    window.paint_quad(fill(
-                        Bounds::new(point(origin.x + start, origin.y), size((end - start).max(px(1.0)), self.line_height)),
-                        colors.selection,
-                    ));
-                }
-                for (x, shaped) in &line.pieces {
-                    shaped
-                        .paint(point(origin.x + *x, origin.y), self.line_height, gpui::TextAlign::Left, None, window, cx)
-                        .expect("editor text painting failed");
-                }
-                if marked.is_none() {
-                    for (range, severity) in diagnostics
-                        .iter()
-                        .map(|(range, severity)| (range, *severity))
-                        .chain(self.server_diagnostic_ranges())
-                    {
-                        if (range.start < line_end && range.end > line.range.start)
-                            || (range.is_empty() && range.start >= line.range.start && range.start <= line.range.end)
+        window.with_content_mask(
+            Some(gpui::ContentMask {
+                bounds: text_bounds,
+                ..Default::default()
+            }),
+            |window| {
+                for (index, line, _) in &lines {
+                    let origin = point(
+                        text_bounds.left() - self.scroll.x,
+                        self.bounds.top() + self.line_height * *index as f32 - self.scroll.y,
+                    );
+                    if *index == caret_line && !self.read_only {
+                        window.paint_quad(
+                            PaintQuad::new(Bounds::new(
+                                point(text_bounds.left(), origin.y),
+                                size(text_bounds.size.width, self.line_height),
+                            ))
+                            .background(colors.current_line),
+                        );
+                    }
+                    let line_end = if index + 1 < self.state.line_count() {
+                        self.state.line_range(index + 1).start
+                    } else {
+                        line.range.end
+                    };
+                    let first_match = self.search_matches.partition_point(|range| range.end <= line.range.start);
+                    for matched in self.search_matches[first_match..].iter().take_while(|range| range.start < line_end) {
+                        let start = line.x_for_byte(matched.start.max(line.range.start));
+                        let end = line.x_for_byte(matched.end.min(line.range.end));
+                        window.paint_quad(
+                            PaintQuad::new(Bounds::new(
+                                point(origin.x + start, origin.y),
+                                size((end - start).max(px(1.0)), self.line_height),
+                            ))
+                            .background(colors.search_match),
+                        );
+                    }
+                    if selection.start < line_end && selection.end > line.range.start {
+                        let start = line.x_for_byte(selection.start.max(line.range.start));
+                        let end = line.x_for_byte(selection.end.min(line.range.end)) + if selection.end > line.range.end { px(8.0) } else { px(0.0) };
+                        window.paint_quad(
+                            PaintQuad::new(Bounds::new(
+                                point(origin.x + start, origin.y),
+                                size((end - start).max(px(1.0)), self.line_height),
+                            ))
+                            .background(colors.selection),
+                        );
+                    }
+                    for (x, shaped) in &line.pieces {
+                        shaped
+                            .paint(point(origin.x + *x, origin.y), self.line_height, gpui::TextAlign::Left, None, window, cx)
+                            .expect("editor text painting failed");
+                    }
+                    if marked.is_none() {
+                        for (range, severity) in diagnostics
+                            .iter()
+                            .map(|(range, severity)| (range, *severity))
+                            .chain(self.server_diagnostic_ranges())
                         {
-                            let start = line.x_for_byte(range.start.max(line.range.start));
-                            let end = line.x_for_byte(range.end.min(line.range.end));
-                            window.paint_quad(fill(
-                                Bounds::new(
-                                    point(origin.x + start, origin.y + self.line_height - px(2.0)),
-                                    size((end - start).max(px(4.0)), px(1.0)),
-                                ),
-                                if severity == ligature_diagnostics::Severity::Error {
-                                    colors.error
-                                } else {
-                                    colors.muted_text
-                                },
-                            ));
+                            if (range.start < line_end && range.end > line.range.start)
+                                || (range.is_empty() && range.start >= line.range.start && range.start <= line.range.end)
+                            {
+                                let start = line.x_for_byte(range.start.max(line.range.start));
+                                let end = line.x_for_byte(range.end.min(line.range.end));
+                                window.paint_quad(
+                                    PaintQuad::new(Bounds::new(
+                                        point(origin.x + start, origin.y + self.line_height - px(2.0)),
+                                        size((end - start).max(px(4.0)), px(1.0)),
+                                    ))
+                                    .background(if severity == ligature_diagnostics::Severity::Error {
+                                        colors.error
+                                    } else {
+                                        colors.muted_text
+                                    }),
+                                );
+                            }
                         }
                     }
+                    if let Some(marked) = &marked
+                        && marked.start <= line.range.end
+                        && marked.end >= line.range.start
+                    {
+                        let start = line.x_for_byte(marked.start.max(line.range.start));
+                        let end = line.x_for_byte(marked.end.min(line.range.end));
+                        window.paint_quad(
+                            PaintQuad::new(Bounds::new(
+                                point(origin.x + start, origin.y + self.line_height - px(2.0)),
+                                size((end - start).max(px(1.0)), px(1.0)),
+                            ))
+                            .background(colors.text),
+                        );
+                    }
+                    if *index == caret_line && !self.read_only && self.focus.is_focused(window) && self.caret_on {
+                        window.paint_quad(
+                            PaintQuad::new(Bounds::new(
+                                point(origin.x + line.x_for_byte(self.state.caret()), origin.y),
+                                size(px(1.0), self.line_height),
+                            ))
+                            .background(colors.text),
+                        );
+                    }
                 }
-                if let Some(marked) = &marked
-                    && marked.start <= line.range.end
-                    && marked.end >= line.range.start
-                {
-                    let start = line.x_for_byte(marked.start.max(line.range.start));
-                    let end = line.x_for_byte(marked.end.min(line.range.end));
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            point(origin.x + start, origin.y + self.line_height - px(2.0)),
-                            size((end - start).max(px(1.0)), px(1.0)),
-                        ),
-                        colors.text,
-                    ));
-                }
-                if *index == caret_line && !self.read_only && self.focus.is_focused(window) && self.caret_on {
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            point(origin.x + line.x_for_byte(self.state.caret()), origin.y),
-                            size(px(1.0), self.line_height),
-                        ),
-                        colors.text,
-                    ));
-                }
-            }
-        });
+            },
+        );
         if self.read_only {
             return;
         }
-        window.with_content_mask(Some(gpui::ContentMask { bounds: self.bounds }), |window| {
-            window.paint_quad(fill(
-                Bounds::new(self.bounds.origin, size(self.gutter, self.bounds.size.height)),
-                colors.gutter,
-            ));
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(self.bounds.left() + self.gutter - px(1.0), self.bounds.top()),
-                    size(px(1.0), self.bounds.size.height),
-                ),
-                colors.border,
-            ));
-            for (index, _, number) in lines {
-                let origin = point(
-                    self.bounds.left() + self.gutter - px(12.0) - number.width,
-                    self.bounds.top() + self.line_height * index as f32 - self.scroll.y,
+        window.with_content_mask(
+            Some(gpui::ContentMask {
+                bounds: self.bounds,
+                ..Default::default()
+            }),
+            |window| {
+                window.paint_quad(
+                    PaintQuad::new(Bounds::new(self.bounds.origin, size(self.gutter, self.bounds.size.height))).background(colors.gutter),
                 );
-                number
-                    .paint(origin, self.line_height, gpui::TextAlign::Left, None, window, cx)
-                    .expect("gutter painting failed");
-            }
-        });
+                window.paint_quad(
+                    PaintQuad::new(Bounds::new(
+                        point(self.bounds.left() + self.gutter - px(1.0), self.bounds.top()),
+                        size(px(1.0), self.bounds.size.height),
+                    ))
+                    .background(colors.border),
+                );
+                for (index, _, number) in lines {
+                    let origin = point(
+                        self.bounds.left() + self.gutter - px(12.0) - number.width,
+                        self.bounds.top() + self.line_height * index as f32 - self.scroll.y,
+                    );
+                    number
+                        .paint(origin, self.line_height, gpui::TextAlign::Left, None, window, cx)
+                        .expect("gutter painting failed");
+                }
+            },
+        );
     }
 }
 
@@ -1280,7 +1306,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn native_rendering_keeps_unchanged_braces_and_comments_identical_during_typing() {
         let mut cx = gpui::HeadlessAppContext::with_platform(
-            gpui_platform::current_platform(true).text_system(),
+            Arc::new(gpui_apple::MacTextSystem::new()),
             Arc::new(()),
             gpui_platform::current_headless_renderer,
         );
@@ -1413,13 +1439,13 @@ mod tests {
                     assert_eq!(highlighted.width, pending.width);
                     assert_eq!(highlighted.boundaries, pending.boundaries);
                     for ((_, highlighted), (_, pending)) in highlighted.pieces.iter().zip(&pending.pieces) {
-                        let glyphs = |line: &ShapedLine| {
-                            line.runs
+                        let glyphs = |line: &ShapedText| {
+                            line.paint_fragments
                                 .iter()
                                 .flat_map(|run| {
                                     run.glyphs
                                         .iter()
-                                        .map(move |glyph| (run.font_id, glyph.id, glyph.position, glyph.index, glyph.is_emoji))
+                                        .map(move |glyph| (run.font_id, glyph.id, glyph.position, glyph.is_emoji))
                                 })
                                 .collect::<Vec<_>>()
                         };
@@ -1444,7 +1470,7 @@ mod tests {
                     let shaped = editor.shape_text(text.to_owned().into(), window, false);
                     let expected: Vec<_> = text
                         .grapheme_indices(true)
-                        .map(|(offset, _)| (offset, shaped.x_for_index(offset)))
+                        .map(|(offset, _)| (offset, shaped.visual_position_for_byte_index(offset, editor.line_height).unwrap().x))
                         .chain(std::iter::once((text.len(), shaped.width)))
                         .collect();
                     assert_eq!(layout.boundaries, expected, "{text}");

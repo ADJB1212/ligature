@@ -4,8 +4,8 @@ mod state;
 pub use state::Zoom;
 
 use gpui::{
-    App, Bounds, Context, EventEmitter, FocusHandle, Focusable, IntoElement, KeyBinding, MouseButton, Pixels, Point, Render, RenderImage, Size, Task,
-    Window, actions, canvas, div, fill, point, prelude::*, px, size,
+    App, Bounds, Context, EventEmitter, FocusHandle, Focusable, IntoElement, KeyBinding, MouseButton, PaintQuad, Pixels, Point, Render, RenderImage,
+    Size, Task, Window, actions, canvas, div, point, prelude::*, px, size,
 };
 use ligature_pdf::{Document, Page};
 use ligature_synctex::{Mapping, PdfPosition, SourcePosition};
@@ -610,11 +610,18 @@ impl Render for Preview {
                                 paint_entity.update(cx, |preview, _| {
                                     for index in preview.visible_pages() {
                                         let page_bounds = preview.bounds_for_page(index);
-                                        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-                                            window.paint_quad(fill(page_bounds, gpui::white()));
-                                        });
+                                        window.with_content_mask(
+                                            Some(gpui::ContentMask {
+                                                bounds,
+                                                ..Default::default()
+                                            }),
+                                            |window| {
+                                                window.paint_quad(PaintQuad::new(page_bounds).background(gpui::white()));
+                                            },
+                                        );
                                         if let Some(image) = preview.page_image(index) {
-                                            let _ = window.paint_image(bounds, page_bounds, gpui::Corners::default(), Arc::clone(image), 0, false);
+                                            let _ =
+                                                window.paint_image(bounds, page_bounds, gpui::Corners::default(), 0.0, Arc::clone(image), 0, false);
                                         }
                                         if let Some(highlight) = preview.highlight
                                             && highlight.page == index + 1
@@ -625,9 +632,13 @@ impl Render for Preview {
                                                 page_bounds.origin + point_px(x * preview.scale - 8.0, y * preview.scale - 8.0),
                                                 size(px(16.0), px(16.0)),
                                             );
-                                            window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-                                                window.paint_quad(fill(highlight_bounds, colors().selection))
-                                            });
+                                            window.with_content_mask(
+                                                Some(gpui::ContentMask {
+                                                    bounds,
+                                                    ..Default::default()
+                                                }),
+                                                |window| window.paint_quad(PaintQuad::new(highlight_bounds).background(colors().selection)),
+                                            );
                                         }
                                     }
                                 });

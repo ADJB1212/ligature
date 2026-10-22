@@ -1,8 +1,8 @@
-use std::{ops::Range, time::Duration};
+use std::{ops::Range, sync::Arc, time::Duration};
 
 use gpui::{
     App, Bounds, ColorExt, Context, CursorStyle, ElementInputHandler, EntityInputHandler, FocusHandle, Focusable, IntoElement, KeyDownEvent,
-    MouseButton, Pixels, Point, Render, ShapedLine, Task, TextRun, UTF16Selection, Window, canvas, div, fill, point, prelude::*, px, size,
+    MouseButton, PaintQuad, Pixels, Point, Render, ShapedText, Task, TextRun, UTF16Selection, Window, canvas, div, point, prelude::*, px, size,
 };
 use ligature_theme::{colors, spacing, typography};
 
@@ -12,7 +12,7 @@ pub struct TextInput {
     placeholder: gpui::SharedString,
     cursor: usize,
     marked: Option<Range<usize>>,
-    line: Option<ShapedLine>,
+    line: Option<Arc<ShapedText>>,
     bounds: Bounds<Pixels>,
     scroll: Pixels,
     caret_on: bool,
@@ -214,8 +214,8 @@ impl EntityInputHandler for TextInput {
     ) -> Option<Bounds<Pixels>> {
         let range = byte_range(&self.text, range);
         let line = self.line.as_ref()?;
-        let start = if self.text.is_empty() { px(0.0) } else { line.x_for_index(range.start) };
-        let end = if self.text.is_empty() { px(0.0) } else { line.x_for_index(range.end) };
+        let start = line.visual_position_for_byte_index(range.start, self.bounds.size.height)?.x;
+        let end = line.visual_position_for_byte_index(range.end, self.bounds.size.height)?.x;
         Some(Bounds::new(
             point(self.bounds.left() + start - self.scroll, self.bounds.top()),
             size((end - start).max(px(1.0)), self.bounds.size.height),
@@ -226,7 +226,11 @@ impl EntityInputHandler for TextInput {
         if self.text.is_empty() {
             return Some(0);
         }
-        let byte = self.line.as_ref()?.closest_index_for_x(position.x - self.bounds.left() + self.scroll);
+        let byte = self
+            .line
+            .as_ref()?
+            .closest_byte_index_for_pixel_point(point(position.x - self.bounds.left() + self.scroll, px(0.0)), self.bounds.size.height)
+            .unwrap_or_else(|index| index);
         Some(utf16_offset(&self.text, byte))
     }
 }
@@ -264,7 +268,11 @@ impl Render for TextInput {
                         0
                     } else {
                         this.line.as_ref().map_or(this.text.len(), |line| {
-                            line.closest_index_for_x(event.position.x - this.bounds.left() + this.scroll)
+                            line.closest_byte_index_for_pixel_point(
+                                point(event.position.x - this.bounds.left() + this.scroll, px(0.0)),
+                                this.bounds.size.height,
+                            )
+                            .unwrap_or_else(|index| index)
                         })
                     };
                     this.marked = None;
@@ -279,43 +287,60 @@ impl Render for TextInput {
                         let empty = input.text.is_empty();
                         let text: gpui::SharedString = if empty { input.placeholder.clone() } else { input.text.clone().into() };
                         let style = window.text_style();
-                        let line = window.text_system().shape_line(
-                            text.clone(),
-                            typography::control_size(),
-                            &[TextRun {
-                                len: text.len(),
-                                font: style.font(),
-                                color: if empty { colors.muted_text } else { colors.text },
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                                letter_spacing: None,
-                            }],
-                            None,
+                        let line = Arc::new(
+                            window
+                                .text_system()
+                                .shape_text(
+                                    text.clone(),
+                                    typography::control_size(),
+                                    &[TextRun {
+                                        len: text.len(),
+                                        font: style.font(),
+                                        color: if empty { colors.muted_text } else { colors.text },
+                                        background_color: None,
+                                        underline: None,
+                                        strikethrough: None,
+                                        letter_spacing: None,
+                                    }],
+                                    None,
+                                    None,
+                                )
+                                .expect("input text shaping failed"),
                         );
-                        let caret = if empty { px(0.0) } else { line.x_for_index(input.cursor) };
+                        let caret = if empty {
+                            px(0.0)
+                        } else {
+                            line.visual_position_for_byte_index(input.cursor, bounds.size.height)
+                                .map_or(px(0.0), |position| position.x)
+                        };
                         let scroll = (caret - bounds.size.width + px(2.0)).max(px(0.0));
+                        entity.update(cx, |input, _| {
+                            input.bounds = bounds;
+                            input.line = Some(Arc::clone(&line));
+                            input.scroll = scroll;
+                        });
                         (line, caret, scroll)
                     },
                     move |bounds, (line, caret, scroll), window, cx| {
                         let origin = point(bounds.left() - scroll, bounds.top());
                         let focus = paint_entity.read(cx).focus.clone();
                         window.handle_input(&focus, ElementInputHandler::new(bounds, paint_entity.clone()), cx);
-                        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-                            line.paint(origin, bounds.size.height, gpui::TextAlign::Left, None, window, cx)
-                                .expect("input text painting failed");
-                            if focus.is_focused(window) && paint_entity.read(cx).caret_on {
-                                window.paint_quad(fill(
-                                    Bounds::new(point(origin.x + caret, origin.y), size(px(1.0), bounds.size.height)),
-                                    colors.text,
-                                ));
-                            }
-                        });
-                        paint_entity.update(cx, |input, _| {
-                            input.bounds = bounds;
-                            input.line = Some(line);
-                            input.scroll = scroll;
-                        });
+                        window.with_content_mask(
+                            Some(gpui::ContentMask {
+                                bounds,
+                                ..Default::default()
+                            }),
+                            |window| {
+                                line.paint(origin, bounds.size.height, gpui::TextAlign::Left, None, window, cx)
+                                    .expect("input text painting failed");
+                                if focus.is_focused(window) && paint_entity.read(cx).caret_on {
+                                    window.paint_quad(
+                                        PaintQuad::new(Bounds::new(point(origin.x + caret, origin.y), size(px(1.0), bounds.size.height)))
+                                            .background(colors.text),
+                                    );
+                                }
+                            },
+                        );
                     },
                 )
                 .w_full()

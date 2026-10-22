@@ -17,7 +17,7 @@ pub(super) fn init(cx: &mut App) {
     ]);
     cx.on_action(|_: &OpenAbout, cx| {
         if let Some(handle) = cx.windows().into_iter().find_map(|window| window.downcast::<AboutView>())
-            && handle.update(cx, |_, window, _| window.activate_window()).is_ok()
+            && handle.update(cx, |_, window, _| window.activate()).is_ok()
         {
             return;
         }

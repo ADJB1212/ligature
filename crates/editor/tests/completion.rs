@@ -138,7 +138,7 @@ fn completion_keyboard_navigation_escape_and_focus_loss_preserve_text() {
     assert_eq!(editor.read_with(&cx, |editor, _| editor.state().text().to_owned()), "\\s");
     cx.simulate_keystrokes(window.into(), "ctrl-space");
     cx.update_window(window.into(), |_, window, cx| {
-        window.blur();
+        window.blur(cx);
         window.draw(cx).clear(cx);
     })
     .unwrap();

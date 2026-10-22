@@ -21,7 +21,7 @@ mod formatter_tests;
 impl Workspace {
     pub fn open_settings(&mut self, cx: &mut Context<Self>) {
         if let Some(handle) = self.settings_window
-            && handle.update(cx, |_, window, _| window.activate_window()).is_ok()
+            && handle.update(cx, |_, window, _| window.activate()).is_ok()
         {
             return;
         }
@@ -554,7 +554,7 @@ impl Render for SettingsView {
                     window.remove_window();
                 }
             }))
-            .on_action(cx.listener(|_, _: &OpenSettings, window, _| window.activate_window()))
+            .on_action(cx.listener(|_, _: &OpenSettings, window, _| window.activate()))
             .on_action(cx.listener(|view, _: &Save, _, cx| view.save(cx)))
             .child(
                 chrome_strip()

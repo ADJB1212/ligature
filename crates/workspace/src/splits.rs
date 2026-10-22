@@ -444,7 +444,7 @@ mod tests {
         .unwrap();
         cx.run_until_parked();
         cx.update_window(window.into(), |_, window, cx| {
-            window.activate_window();
+            window.activate();
             root.update(cx, |workspace, cx| workspace.activate_tab(1, window, cx));
             window.draw(cx).clear(cx);
         })

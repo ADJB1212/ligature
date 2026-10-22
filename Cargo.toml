@@ -29,8 +29,8 @@ edition = "2024"
 
 [workspace.dependencies]
 memchr = { version = "2", default-features = false, features = ["std"] }
-gpui = { package = "gpui-ce", version = "0.2", default-features = false }
-gpui_platform = { package = "gpui_ce_platform", version = "0.1", default-features = false, features = ["font-kit"] }
+gpui = { package = "gpui-ce", version = "0.3", default-features = false }
+gpui_platform = { package = "gpui_ce_platform", version = "0.3", default-features = false, features = ["font-kit"] }
 ligature-core = { path = "crates/core" }
 ligature-app = { path = "crates/app" }
 ligature-workspace = { path = "crates/workspace" }
